@@ -1,0 +1,4 @@
+*.venv
+script.aws
+*__pycache__
+results/
