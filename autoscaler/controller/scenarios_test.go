@@ -48,7 +48,7 @@ func TestCooldownBlocksImmediateRescale(t *testing.T) {
 	now = now.Add(1 * time.Minute)
 	state.RecordSignal(stressedSignal(now), 10)
 	result := Decide(state, cfg, now)
-	state.Apply(result, now) // ahora CurrentCapacity=2, LastScaleUp=now
+	state.Apply(result, now) // ahora CurrentCapacity=2, LastScaleTime=now
 
 	if state.CurrentCapacity != 2 {
 		t.Fatalf("esperaba capacidad 2 tras la subida, obtuvo %d", state.CurrentCapacity)
@@ -73,11 +73,39 @@ func TestCooldownBlocksImmediateRescale(t *testing.T) {
 	}
 }
 
+func TestScaleOutCooldownAlsoBlocksScaleDown(t *testing.T) {
+	cfg := DefaultPolicyConfig()
+	state := ControllerState{CurrentCapacity: 1}
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	state.RecordSignal(stressedSignal(now), 10)
+	now = now.Add(1 * time.Minute)
+	state.RecordSignal(stressedSignal(now), 10)
+	result := Decide(state, cfg, now)
+	state.Apply(result, now)
+
+	if result.Decision != IncreaseCapacity {
+		t.Fatalf("esperaba scale out, obtuvo %s", result.Decision)
+	}
+
+	// Aunque el sistema esté cómodo, todavía sigue dentro del cooldown
+	// iniciado por el scale out.
+	for i := 0; i < cfg.ScaleDownConfirmCycles; i++ {
+		now = now.Add(1 * time.Minute)
+		state.RecordSignal(comfortableSignal(now), 10)
+	}
+	result = Decide(state, cfg, now)
+
+	if result.Decision != MaintainCapacity {
+		t.Errorf("scale-in durante cooldown: esperado MAINTAIN_CAPACITY, obtuvo %s", result.Decision)
+	}
+}
+
 func TestTransientDipDoesNotTriggerScaleDown(t *testing.T) {
 	cfg := DefaultPolicyConfig() // ScaleDownConfirmCycles = 3
 	state := ControllerState{
 		CurrentCapacity: 2,
-		LastScaleDown:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), // fuera de cooldown desde el inicio
+		LastScaleTime:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), // fuera de cooldown desde el inicio
 	}
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 

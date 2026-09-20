@@ -7,9 +7,9 @@ import (
 
 // umbrales y parámetros de la política de decisión
 type PolicyConfig struct {
-	ScaleUpCPUThreshold         float64
-	ScaleUpP95Threshold         float64
-	ScaleUpRequestsThreshold    float64
+	ScaleUpCPUThreshold      float64
+	ScaleUpP95Threshold      float64
+	ScaleUpRequestsThreshold float64
 
 	ScaleDownCPUThreshold float64
 	ScaleDownP95Threshold float64
@@ -27,9 +27,9 @@ type PolicyConfig struct {
 // configuración definida en Exp01.
 func DefaultPolicyConfig() PolicyConfig {
 	return PolicyConfig{
-		ScaleUpCPUThreshold:         45.0,
-		ScaleUpP95Threshold:         1000.0,
-		ScaleUpRequestsThreshold:    8.0,
+		ScaleUpCPUThreshold:      45.0,
+		ScaleUpP95Threshold:      1000.0,
+		ScaleUpRequestsThreshold: 8.0,
 
 		ScaleDownCPUThreshold: 15.0,
 		ScaleDownP95Threshold: 200.0,
@@ -97,7 +97,7 @@ func Decide(state ControllerState, cfg PolicyConfig, now time.Time) DecisionResu
 	}
 
 	canScaleUp := state.CurrentCapacity < cfg.MaxInstances &&
-		now.Sub(state.LastScaleUp) >= cfg.ScaleUpCooldown
+		now.Sub(state.LastScaleTime) >= cfg.ScaleUpCooldown
 
 	if canScaleUp && lastNSatisfy(state.History, cfg.ScaleUpConfirmCycles, func(s Signals) bool {
 		return scaleUpBreach(s, cfg)
@@ -112,7 +112,7 @@ func Decide(state ControllerState, cfg PolicyConfig, now time.Time) DecisionResu
 	}
 
 	canScaleDown := state.CurrentCapacity > cfg.MinInstances &&
-		now.Sub(state.LastScaleDown) >= cfg.ScaleDownCooldown
+		now.Sub(state.LastScaleTime) >= cfg.ScaleDownCooldown
 
 	if canScaleDown && lastNSatisfy(state.History, cfg.ScaleDownConfirmCycles, func(s Signals) bool {
 		return scaleDownComfortable(s, cfg)

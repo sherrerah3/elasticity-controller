@@ -6,8 +6,8 @@ import "time"
 type Signals struct {
 	Timestamp         time.Time
 	CPUUtilization    float64
-	P95LatencyMillis  float64 
-	RequestsPerTarget float64 
+	P95LatencyMillis  float64
+	RequestsPerTarget float64
 	HealthyInstances  int
 	TotalInstances    int
 }
@@ -32,10 +32,10 @@ type DecisionResult struct {
 
 // memoria del controlador entre ciclos de evaluación.
 type ControllerState struct {
-	CurrentCapacity int
-	History         []Signals
-	LastScaleUp     time.Time
-	LastScaleDown   time.Time
+	CurrentCapacity    int
+	History            []Signals
+	LastScaleTime      time.Time
+	LastScaleDirection Decision
 }
 
 // actualizar estado del controlador según decisión tomada (pointer para modificar struct original)
@@ -43,10 +43,12 @@ func (state *ControllerState) Apply(result DecisionResult, now time.Time) {
 	switch result.Decision {
 	case IncreaseCapacity:
 		state.CurrentCapacity++
-		state.LastScaleUp = now
+		state.LastScaleTime = now
+		state.LastScaleDirection = IncreaseCapacity
 	case ReduceCapacity:
 		state.CurrentCapacity--
-		state.LastScaleDown = now
+		state.LastScaleTime = now
+		state.LastScaleDirection = ReduceCapacity
 	}
 }
 
