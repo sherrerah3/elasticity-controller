@@ -16,14 +16,14 @@ func TestScaleUpBreach(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "CPU sola supera el umbral",
-			signal:   Signals{CPUUtilization: 50, P95LatencyMillis: 150, RequestsPerTarget: 2},
-			expected: true,
-		},
-		{
 			name:     "latencia sola supera el umbral",
 			signal:   Signals{CPUUtilization: 10, P95LatencyMillis: 1200, RequestsPerTarget: 2},
 			expected: true,
+		},
+		{
+			name:     "CPU alta pero pocos requests, no debe alertar",
+			signal:   Signals{CPUUtilization: 60, P95LatencyMillis: 150, RequestsPerTarget: 2},
+			expected: false,
 		},
 		{
 			name:     "muchos requests pero CPU baja, no debe alertar",
@@ -31,9 +31,9 @@ func TestScaleUpBreach(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "muchos requests con CPU moderada, si debe alertar",
-			signal:   Signals{CPUUtilization: 35, P95LatencyMillis: 150, RequestsPerTarget: 20},
-			expected: true,
+			name:     "CPU alta Y muchos requests juntos, si debe alertar",
+			signal:   Signals{CPUUtilization: 50, P95LatencyMillis: 150, RequestsPerTarget: 20},
+			expected: false,
 		},
 	}
 

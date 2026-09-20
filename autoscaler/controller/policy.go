@@ -8,7 +8,6 @@ type PolicyConfig struct {
 	ScaleUpCPUThreshold         float64
 	ScaleUpP95Threshold         float64
 	ScaleUpRequestsThreshold    float64
-	ScaleUpRequestsCPUThreshold float64
 
 	ScaleDownCPUThreshold float64
 	ScaleDownP95Threshold float64
@@ -30,7 +29,6 @@ func DefaultPolicyConfig() PolicyConfig {
 		ScaleUpCPUThreshold:         45.0,
 		ScaleUpP95Threshold:         1000.0,
 		ScaleUpRequestsThreshold:    8.0,
-		ScaleUpRequestsCPUThreshold: 30.0,
 
 		ScaleDownCPUThreshold: 15.0,
 		ScaleDownP95Threshold: 200.0,
@@ -47,12 +45,11 @@ func DefaultPolicyConfig() PolicyConfig {
 }
 
 func scaleUpBreach(s Signals, cfg PolicyConfig) bool {
-	cpuAlert := s.CPUUtilization > cfg.ScaleUpCPUThreshold
 	latencyAlert := s.P95LatencyMillis > cfg.ScaleUpP95Threshold
-	requestsAlert := s.RequestsPerTarget > cfg.ScaleUpRequestsThreshold &&
-		s.CPUUtilization > cfg.ScaleUpRequestsCPUThreshold
+	loadAlert := s.RequestsPerTarget > cfg.ScaleUpRequestsThreshold &&
+		s.CPUUtilization > cfg.ScaleUpCPUThreshold
 
-	return cpuAlert || latencyAlert || requestsAlert
+	return latencyAlert || loadAlert
 }
 
 func scaleDownComfortable(s Signals, cfg PolicyConfig) bool {
