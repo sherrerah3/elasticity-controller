@@ -17,8 +17,9 @@ type PolicyConfig struct {
 	ScaleUpConfirmCycles   int
 	ScaleDownConfirmCycles int
 
-	ScaleUpCooldown   time.Duration
-	ScaleDownCooldown time.Duration
+	ScaleUpCooldown         time.Duration
+	ScaleDownCooldown       time.Duration
+	ScaleUpAfterDownCooldown time.Duration
 
 	MinInstances int
 	MaxInstances int
@@ -37,8 +38,9 @@ func DefaultPolicyConfig() PolicyConfig {
 		ScaleUpConfirmCycles:   2,
 		ScaleDownConfirmCycles: 3,
 
-		ScaleUpCooldown:   3 * time.Minute,
-		ScaleDownCooldown: 5 * time.Minute,
+		ScaleUpCooldown:         3 * time.Minute,
+		ScaleDownCooldown:       5 * time.Minute,
+		ScaleUpAfterDownCooldown: 1 * time.Minute,
 
 		MinInstances: 1,
 		MaxInstances: 5,
@@ -97,7 +99,8 @@ func Decide(state ControllerState, cfg PolicyConfig, now time.Time) DecisionResu
 	}
 
 	canScaleUp := state.CurrentCapacity < cfg.MaxInstances &&
-		now.Sub(state.LastScaleTime) >= cfg.ScaleUpCooldown
+		now.Sub(state.LastScaleUp) >= cfg.ScaleUpCooldown &&
+		now.Sub(state.LastScaleDown) >= cfg.ScaleUpAfterDownCooldown
 
 	if canScaleUp && lastNSatisfy(state.History, cfg.ScaleUpConfirmCycles, func(s Signals) bool {
 		return scaleUpBreach(s, cfg)
@@ -112,7 +115,8 @@ func Decide(state ControllerState, cfg PolicyConfig, now time.Time) DecisionResu
 	}
 
 	canScaleDown := state.CurrentCapacity > cfg.MinInstances &&
-		now.Sub(state.LastScaleTime) >= cfg.ScaleDownCooldown
+		now.Sub(state.LastScaleDown) >= cfg.ScaleDownCooldown &&
+		now.Sub(state.LastScaleUp) >= cfg.ScaleUpCooldown
 
 	if canScaleDown && lastNSatisfy(state.History, cfg.ScaleDownConfirmCycles, func(s Signals) bool {
 		return scaleDownComfortable(s, cfg)

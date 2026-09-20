@@ -32,10 +32,10 @@ type DecisionResult struct {
 
 // memoria del controlador entre ciclos de evaluación.
 type ControllerState struct {
-	CurrentCapacity    int
-	History            []Signals
-	LastScaleTime      time.Time
-	LastScaleDirection Decision
+	CurrentCapacity int
+	History         []Signals
+	LastScaleUp     time.Time
+	LastScaleDown   time.Time
 }
 
 // actualizar estado del controlador según decisión tomada (pointer para modificar struct original)
@@ -43,12 +43,10 @@ func (state *ControllerState) Apply(result DecisionResult, now time.Time) {
 	switch result.Decision {
 	case IncreaseCapacity:
 		state.CurrentCapacity++
-		state.LastScaleTime = now
-		state.LastScaleDirection = IncreaseCapacity
+		state.LastScaleUp = now
 	case ReduceCapacity:
 		state.CurrentCapacity--
-		state.LastScaleTime = now
-		state.LastScaleDirection = ReduceCapacity
+		state.LastScaleDown = now
 	}
 }
 

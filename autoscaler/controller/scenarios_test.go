@@ -15,6 +15,7 @@ func comfortableSignal(t time.Time) Signals {
 	return Signals{Timestamp: t, CPUUtilization: 5, P95LatencyMillis: 100, RequestsPerTarget: 1}
 }
 
+// verificar que el sistema no escale con solo 1 señal de estres
 func TestSustainedScaleUpTriggersOnConfirmCycle(t *testing.T) {
 	cfg := DefaultPolicyConfig() // ScaleUpConfirmCycles = 2
 	state := ControllerState{CurrentCapacity: 1}
@@ -37,6 +38,7 @@ func TestSustainedScaleUpTriggersOnConfirmCycle(t *testing.T) {
 	}
 }
 
+// Verificar que el cooldown si este funcionando
 func TestCooldownBlocksImmediateRescale(t *testing.T) {
 	cfg := DefaultPolicyConfig()
 	state := ControllerState{CurrentCapacity: 1}
@@ -48,7 +50,7 @@ func TestCooldownBlocksImmediateRescale(t *testing.T) {
 	now = now.Add(1 * time.Minute)
 	state.RecordSignal(stressedSignal(now), 10)
 	result := Decide(state, cfg, now)
-	state.Apply(result, now) // ahora CurrentCapacity=2, LastScaleTime=now
+	state.Apply(result, now) // ahora CurrentCapacity=2, LastScaleUp=now
 
 	if state.CurrentCapacity != 2 {
 		t.Fatalf("esperaba capacidad 2 tras la subida, obtuvo %d", state.CurrentCapacity)
@@ -73,6 +75,7 @@ func TestCooldownBlocksImmediateRescale(t *testing.T) {
 	}
 }
 
+// Testear que el cooldown de scale-up protege la instancia nueva durante el tiempo configurado
 func TestScaleOutCooldownAlsoBlocksScaleDown(t *testing.T) {
 	cfg := DefaultPolicyConfig()
 	state := ControllerState{CurrentCapacity: 1}
@@ -82,39 +85,77 @@ func TestScaleOutCooldownAlsoBlocksScaleDown(t *testing.T) {
 	now = now.Add(1 * time.Minute)
 	state.RecordSignal(stressedSignal(now), 10)
 	result := Decide(state, cfg, now)
-	state.Apply(result, now)
+	state.Apply(result, now) // LastScaleUp = 00:01
 
 	if result.Decision != IncreaseCapacity {
 		t.Fatalf("esperaba scale out, obtuvo %s", result.Decision)
 	}
 
-	// Aunque el sistema esté cómodo, todavía sigue dentro del cooldown
-	// iniciado por el scale out.
-	for i := 0; i < cfg.ScaleDownConfirmCycles; i++ {
-		now = now.Add(1 * time.Minute)
-		state.RecordSignal(comfortableSignal(now), 10)
-	}
-	result = Decide(state, cfg, now)
+	// Dentro del cooldown de protección (menos de 3 minutos): aunque haya ciclos cómodos,
+	// no debe permitir scale-down.
+	now = now.Add(2 * time.Minute) // 2 minutos después del scale-up
+	state.RecordSignal(comfortableSignal(now), 10)
+	now = now.Add(1 * time.Minute)
+	state.RecordSignal(comfortableSignal(now), 10) // 2 ciclos cómodos
 
+	result = Decide(state, cfg, now)
 	if result.Decision != MaintainCapacity {
-		t.Errorf("scale-in durante cooldown: esperado MAINTAIN_CAPACITY, obtuvo %s", result.Decision)
+		t.Errorf("dentro del cooldown: esperado MAINTAIN_CAPACITY, obtuvo %s", result.Decision)
 	}
 }
 
+// Verificar que una reducción NO bloquea una posterior subida después de ScaleUpAfterDownCooldown
+func TestScaleDownDoesNotBlockScaleUpAfterCooldown(t *testing.T) {
+	cfg := DefaultPolicyConfig()
+	state := ControllerState{
+		CurrentCapacity: 2,
+		LastScaleUp:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), // hace mucho tiempo
+	}
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	// Generar suficientes señales cómodas para provocar una bajada.
+	for i := 0; i < cfg.ScaleDownConfirmCycles; i++ {
+		state.RecordSignal(comfortableSignal(now), 10)
+		now = now.Add(1 * time.Minute)
+	}
+	result := Decide(state, cfg, now)
+	state.Apply(result, now) // 2 -> 1, LastScaleDown = now
+
+	if result.Decision != ReduceCapacity {
+		t.Fatalf("esperaba scale down, obtuvo %s", result.Decision)
+	}
+
+	// Un minuto después: aparece estrés. Como ya pasó ScaleUpAfterDownCooldown (1 minuto),
+	// debería permitir la subida.
+	now = now.Add(1 * time.Minute)
+	state.RecordSignal(stressedSignal(now), 10)
+
+	// Registramos dos ciclos de estrés para satisfacer ScaleUpConfirmCycles = 2.
+	now = now.Add(1 * time.Minute)
+	state.RecordSignal(stressedSignal(now), 10)
+
+	result = Decide(state, cfg, now)
+	if result.Decision != IncreaseCapacity {
+		t.Errorf("después de scale-down + cooldown, con estrés sostenido esperaba INCREASE_CAPACITY, obtuvo %s", result.Decision)
+	}
+}
+
+// Comprobar que espere los ciclos correctos para reducir
 func TestTransientDipDoesNotTriggerScaleDown(t *testing.T) {
 	cfg := DefaultPolicyConfig() // ScaleDownConfirmCycles = 3
 	state := ControllerState{
 		CurrentCapacity: 2,
-		LastScaleTime:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), // fuera de cooldown desde el inicio
+		LastScaleUp:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), // fuera de cooldown desde el inicio
+		LastScaleDown:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), // fuera de cooldown desde el inicio
 	}
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	// Dos ciclos cómodos (una caída transitoria)...
+	// Dos ciclos cómodos 
 	state.RecordSignal(comfortableSignal(now), 10)
 	now = now.Add(1 * time.Minute)
 	state.RecordSignal(comfortableSignal(now), 10)
 
-	// ...pero el tercero vuelve a mostrar estrés (la caída no era real).
+	// el tercero vuelve a mostrar estrés (la caída no era real).
 	now = now.Add(1 * time.Minute)
 	state.RecordSignal(stressedSignal(now), 10)
 	result := Decide(state, cfg, now)
@@ -124,6 +165,7 @@ func TestTransientDipDoesNotTriggerScaleDown(t *testing.T) {
 	}
 }
 
+// comprobar maximo intancias
 func TestNeverExceedsMaxInstances(t *testing.T) {
 	cfg := DefaultPolicyConfig()
 	state := ControllerState{CurrentCapacity: cfg.MaxInstances} // ya en el tope (5)
@@ -141,6 +183,7 @@ func TestNeverExceedsMaxInstances(t *testing.T) {
 	}
 }
 
+// comprobar minimo intancias
 func TestNeverGoesBelowMinInstances(t *testing.T) {
 	cfg := DefaultPolicyConfig()
 	state := ControllerState{CurrentCapacity: cfg.MinInstances} // ya en el minimo (1)
