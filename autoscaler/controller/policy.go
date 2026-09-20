@@ -1,9 +1,11 @@
 package controller
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
-// PolicyConfig contiene todos los umbrales y parámetros ajustables de la
-// política de decisión, como datos en vez de constantes dispersas.
+// umbrales y parámetros de la política de decisión
 type PolicyConfig struct {
 	ScaleUpCPUThreshold         float64
 	ScaleUpP95Threshold         float64
@@ -22,8 +24,7 @@ type PolicyConfig struct {
 	MaxInstances int
 }
 
-// DefaultPolicyConfig devuelve la configuración definida a partir de
-// EXP-01 (ver documento de diseño, sección 5).
+// configuración definida en Exp01.
 func DefaultPolicyConfig() PolicyConfig {
 	return PolicyConfig{
 		ScaleUpCPUThreshold:         45.0,
@@ -44,6 +45,7 @@ func DefaultPolicyConfig() PolicyConfig {
 	}
 }
 
+// condicion para agregar instancias
 func scaleUpBreach(s Signals, cfg PolicyConfig) bool {
 	latencyAlert := s.P95LatencyMillis > cfg.ScaleUpP95Threshold
 	loadAlert := s.RequestsPerTarget > cfg.ScaleUpRequestsThreshold &&
@@ -52,13 +54,30 @@ func scaleUpBreach(s Signals, cfg PolicyConfig) bool {
 	return latencyAlert || loadAlert
 }
 
+// condicion para reducir instancias
 func scaleDownComfortable(s Signals, cfg PolicyConfig) bool {
 	return s.CPUUtilization < cfg.ScaleDownCPUThreshold &&
 		s.P95LatencyMillis < cfg.ScaleDownP95Threshold
 }
 
+func scaleUpReason(s Signals, cfg PolicyConfig) string {
+	latencyAlert := s.P95LatencyMillis > cfg.ScaleUpP95Threshold
+	loadAlert := s.RequestsPerTarget > cfg.ScaleUpRequestsThreshold &&
+		s.CPUUtilization > cfg.ScaleUpCPUThreshold
+
+	switch {
+	case latencyAlert && loadAlert:
+		return "p95_latency_and_load"
+	case latencyAlert:
+		return "p95_latency"
+	default:
+		return "load"
+	}
+}
+
+// verificar que ultimas n mediciones cumplen una condicion
 func lastNSatisfy(history []Signals, n int, condition func(Signals) bool) bool {
-	if len(history) < n {
+	if n <= 0 || len(history) < n {
 		return false
 	}
 	recent := history[len(history)-n:]
@@ -70,7 +89,13 @@ func lastNSatisfy(history []Signals, n int, condition func(Signals) bool) bool {
 	return true
 }
 
+// Decide si puede escalar hacia arriba/abajo y lo justifica
 func Decide(state ControllerState, cfg PolicyConfig, now time.Time) DecisionResult {
+	latestSignal := Signals{}
+	if len(state.History) > 0 {
+		latestSignal = state.History[len(state.History)-1]
+	}
+
 	canScaleUp := state.CurrentCapacity < cfg.MaxInstances &&
 		now.Sub(state.LastScaleUp) >= cfg.ScaleUpCooldown
 
@@ -79,7 +104,10 @@ func Decide(state ControllerState, cfg PolicyConfig, now time.Time) DecisionResu
 	}) {
 		return DecisionResult{
 			Decision:      IncreaseCapacity,
-			Justification: "umbral de estres sostenido por confirm_cycles ciclos consecutivos",
+			Justification: fmt.Sprintf("umbral de estres sostenido por %d ciclos consecutivos", cfg.ScaleUpConfirmCycles),
+			Reason:        scaleUpReason(latestSignal, cfg),
+			Signal:        latestSignal,
+			Capacity:      state.CurrentCapacity,
 		}
 	}
 
@@ -91,12 +119,18 @@ func Decide(state ControllerState, cfg PolicyConfig, now time.Time) DecisionResu
 	}) {
 		return DecisionResult{
 			Decision:      ReduceCapacity,
-			Justification: "sistema comodo sostenido por confirm_cycles ciclos consecutivos",
+			Justification: fmt.Sprintf("sistema comodo sostenido por %d ciclos consecutivos", cfg.ScaleDownConfirmCycles),
+			Reason:        "low_cpu_and_latency",
+			Signal:        latestSignal,
+			Capacity:      state.CurrentCapacity,
 		}
 	}
 
 	return DecisionResult{
 		Decision:      MaintainCapacity,
 		Justification: "sin condiciones sostenidas de subida ni bajada, o en cooldown, o en limite min/max",
+		Reason:        "no_sustained_condition",
+		Signal:        latestSignal,
+		Capacity:      state.CurrentCapacity,
 	}
 }

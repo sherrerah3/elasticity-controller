@@ -2,19 +2,17 @@ package controller
 
 import "time"
 
-// Signals agrupa las señales observadas en un ciclo de evaluación.
-// Se calculan siempre sobre instancias sanas (capacidad efectiva).
+// señales observadas en un ciclo de evaluación.
 type Signals struct {
 	Timestamp         time.Time
-	CPUUtilization    float64 // porcentaje, ej. 45.2
-	P95LatencyMillis  float64 // milisegundos
-	RequestsPerTarget float64 // req/s por instancia sana
+	CPUUtilization    float64
+	P95LatencyMillis  float64 
+	RequestsPerTarget float64 
 	HealthyInstances  int
 	TotalInstances    int
 }
 
-// Decision es el resultado que el controlador debe producir en cada ciclo.
-// Los tres valores son literales exactos exigidos por el reto (sección 9).
+// resultado que el controlador debe producir en cada ciclo.
 type Decision string
 
 const (
@@ -23,24 +21,24 @@ const (
 	ReduceCapacity   Decision = "REDUCE_CAPACITY"
 )
 
-// DecisionResult empaqueta la decisión junto con su justificación, para
-// el logging estructurado que exige el reto.
+// empaquetar la decisión junto con su justificación y metricas
 type DecisionResult struct {
 	Decision      Decision
 	Justification string
+	Reason        string
+	Signal        Signals
+	Capacity      int
 }
 
-// ControllerState es la memoria del controlador entre ciclos de evaluación.
+// memoria del controlador entre ciclos de evaluación.
 type ControllerState struct {
 	CurrentCapacity int
-	History         []Signals // ventana reciente de señales, más antiguo primero
+	History         []Signals
 	LastScaleUp     time.Time
 	LastScaleDown   time.Time
 }
 
-// Apply actualiza el estado del controlador según la decisión tomada.
-// Se usa un pointer receiver (*ControllerState) porque necesitamos
-// modificar el struct original, no una copia.
+// actualizar estado del controlador según decisión tomada (pointer para modificar struct original)
 func (state *ControllerState) Apply(result DecisionResult, now time.Time) {
 	switch result.Decision {
 	case IncreaseCapacity:
@@ -52,9 +50,7 @@ func (state *ControllerState) Apply(result DecisionResult, now time.Time) {
 	}
 }
 
-// RecordSignal añade una señal nueva al historial, manteniendo como
-// máximo maxHistory elementos (ventana deslizante, para no crecer
-// indefinidamente en memoria).
+// añadir señal nueva al historial
 func (state *ControllerState) RecordSignal(s Signals, maxHistory int) {
 	state.History = append(state.History, s)
 	if len(state.History) > maxHistory {

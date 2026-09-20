@@ -33,7 +33,7 @@ func TestScaleUpBreach(t *testing.T) {
 		{
 			name:     "CPU alta Y muchos requests juntos, si debe alertar",
 			signal:   Signals{CPUUtilization: 50, P95LatencyMillis: 150, RequestsPerTarget: 20},
-			expected: false,
+			expected: true,
 		},
 	}
 
