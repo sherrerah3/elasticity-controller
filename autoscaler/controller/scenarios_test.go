@@ -104,7 +104,7 @@ func TestScaleOutCooldownAlsoBlocksScaleDown(t *testing.T) {
 	}
 }
 
-// Verificar que una reducción NO bloquea una posterior subida después de ScaleUpAfterDownCooldown
+// Verificar que una reducción no bloquea una posterior subida si ya pasó el cooldown de subida.
 func TestScaleDownDoesNotBlockScaleUpAfterCooldown(t *testing.T) {
 	cfg := DefaultPolicyConfig()
 	state := ControllerState{
@@ -113,7 +113,6 @@ func TestScaleDownDoesNotBlockScaleUpAfterCooldown(t *testing.T) {
 	}
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	// Generar suficientes señales cómodas para provocar una bajada.
 	for i := 0; i < cfg.ScaleDownConfirmCycles; i++ {
 		state.RecordSignal(comfortableSignal(now), 10)
 		now = now.Add(1 * time.Minute)
@@ -125,18 +124,16 @@ func TestScaleDownDoesNotBlockScaleUpAfterCooldown(t *testing.T) {
 		t.Fatalf("esperaba scale down, obtuvo %s", result.Decision)
 	}
 
-	// Un minuto después: aparece estrés. Como ya pasó ScaleUpAfterDownCooldown (1 minuto),
-	// debería permitir la subida.
-	now = now.Add(1 * time.Minute)
+	// Después de una bajada, el sistema puede reaccionar ante estrés sostenido
+	// si ya cumplió el cooldown de subida.
+	now = now.Add(4 * time.Minute)
 	state.RecordSignal(stressedSignal(now), 10)
-
-	// Registramos dos ciclos de estrés para satisfacer ScaleUpConfirmCycles = 2.
 	now = now.Add(1 * time.Minute)
 	state.RecordSignal(stressedSignal(now), 10)
 
 	result = Decide(state, cfg, now)
 	if result.Decision != IncreaseCapacity {
-		t.Errorf("después de scale-down + cooldown, con estrés sostenido esperaba INCREASE_CAPACITY, obtuvo %s", result.Decision)
+		t.Errorf("con estrés sostenido después de bajar, esperaba INCREASE_CAPACITY, obtuvo %s", result.Decision)
 	}
 }
 
