@@ -4,6 +4,9 @@ script.aws
 *__pycache__
 results/
 
+# documentacion de estudio del codigo (no se versiona)
+docs/
+
 # Claves privadas (labsuser.pem de AWS Academy, etc.)
 *.pem
 
