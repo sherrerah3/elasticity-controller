@@ -8,11 +8,11 @@ import (
 )
 
 func comfortable() controller.Signals {
-	return controller.Signals{CPUUtilization: 5, P95LatencyMillis: 100, RequestsPerTarget: 1}
+	return controller.Signals{CPUUtilization: 5, P95LatencyMillis: 100, RequestsPerTarget: 1, Valid: true}
 }
 
 func stressed() controller.Signals {
-	return controller.Signals{CPUUtilization: 60, P95LatencyMillis: 1500, RequestsPerTarget: 12}
+	return controller.Signals{CPUUtilization: 60, P95LatencyMillis: 1500, RequestsPerTarget: 12, Valid: true}
 }
 
 func transientDip() []controller.Signals {
