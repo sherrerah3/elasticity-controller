@@ -22,6 +22,9 @@ type PolicyConfig struct {
 
 	MinInstances int
 	MaxInstances int
+
+	// N chequeos unhealthy consecutivos para disparar reemplazo (auto-sanacion).
+	UnhealthyReplaceCycles int
 }
 
 // configuración definida en Exp01.
@@ -42,6 +45,8 @@ func DefaultPolicyConfig() PolicyConfig {
 
 		MinInstances: 1,
 		MaxInstances: 5,
+
+		UnhealthyReplaceCycles: 3,
 	}
 }
 
@@ -94,6 +99,18 @@ func Decide(state ControllerState, cfg PolicyConfig, now time.Time) DecisionResu
 	latestSignal := Signals{}
 	if len(state.History) > 0 {
 		latestSignal = state.History[len(state.History)-1]
+	}
+
+	// guard de datos insuficientes (diseño 5.5): ante metricas faltantes o
+	// invalidas no se actua, para no asumir el mejor ni el peor caso.
+	if len(state.History) == 0 || !latestSignal.Valid {
+		return DecisionResult{
+			Decision:      MaintainCapacity,
+			Justification: "datos insuficientes: metricas faltantes, retrasadas o invalidas",
+			Reason:        "insufficient_data",
+			Signal:        latestSignal,
+			Capacity:      state.CurrentCapacity,
+		}
 	}
 
 	canScaleUp := state.CurrentCapacity < cfg.MaxInstances &&

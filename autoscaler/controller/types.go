@@ -4,12 +4,15 @@ import "time"
 
 // señales observadas en un ciclo de evaluación.
 type Signals struct {
-	Timestamp         time.Time
-	CPUUtilization    float64
-	P95LatencyMillis  float64
-	RequestsPerTarget float64
-	HealthyInstances  int
-	TotalInstances    int
+	Timestamp         time.Time `json:"timestamp"`
+	CPUUtilization    float64   `json:"cpu_utilization"`
+	P95LatencyMillis  float64   `json:"p95_latency_millis"`
+	RequestsPerTarget float64   `json:"requests_per_target"`
+	HealthyInstances  int       `json:"healthy_instances"`
+	TotalInstances    int       `json:"total_instances"`
+
+	// false si faltan datos este ciclo; una señal invalida nunca provoca escalado.
+	Valid bool `json:"valid"`
 }
 
 // resultado que el controlador debe producir en cada ciclo.

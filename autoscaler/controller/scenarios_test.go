@@ -7,12 +7,12 @@ import (
 
 // helper: crea una señal "de estrés" reutilizable en varios escenarios.
 func stressedSignal(t time.Time) Signals {
-	return Signals{Timestamp: t, CPUUtilization: 60, P95LatencyMillis: 1500, RequestsPerTarget: 12}
+	return Signals{Timestamp: t, CPUUtilization: 60, P95LatencyMillis: 1500, RequestsPerTarget: 12, Valid: true}
 }
 
 // helper: crea una señal "cómoda" reutilizable en varios escenarios.
 func comfortableSignal(t time.Time) Signals {
-	return Signals{Timestamp: t, CPUUtilization: 5, P95LatencyMillis: 100, RequestsPerTarget: 1}
+	return Signals{Timestamp: t, CPUUtilization: 5, P95LatencyMillis: 100, RequestsPerTarget: 1, Valid: true}
 }
 
 // verificar que el sistema no escale con solo 1 señal de estres
@@ -147,7 +147,7 @@ func TestTransientDipDoesNotTriggerScaleDown(t *testing.T) {
 	}
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-	// Dos ciclos cómodos 
+	// Dos ciclos cómodos
 	state.RecordSignal(comfortableSignal(now), 10)
 	now = now.Add(1 * time.Minute)
 	state.RecordSignal(comfortableSignal(now), 10)
@@ -195,5 +195,67 @@ func TestNeverGoesBelowMinInstances(t *testing.T) {
 
 	if state.CurrentCapacity != cfg.MinInstances {
 		t.Errorf("la capacidad nunca debe bajar de MinInstances (%d), quedo en %d", cfg.MinInstances, state.CurrentCapacity)
+	}
+}
+
+// helper: señal invalida (sin datos utilizables este ciclo).
+func invalidSignal(t time.Time) Signals {
+	return Signals{Timestamp: t, Valid: false}
+}
+
+// una señal invalida no debe disparar REDUCE aunque sus ceros "parezcan" comodos.
+func TestInvalidSignalDoesNotTriggerScaleDown(t *testing.T) {
+	cfg := DefaultPolicyConfig()
+	state := ControllerState{
+		CurrentCapacity: 2,
+		LastScaleUp:     time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), // fuera de cooldown
+		LastScaleDown:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	for i := 0; i < cfg.ScaleDownConfirmCycles; i++ {
+		state.RecordSignal(invalidSignal(now), 10)
+		now = now.Add(1 * time.Minute)
+	}
+	result := Decide(state, cfg, now)
+
+	if result.Decision != MaintainCapacity {
+		t.Errorf("señal invalida: esperado MAINTAIN_CAPACITY, obtuvo %s", result.Decision)
+	}
+	if result.Reason != "insufficient_data" {
+		t.Errorf("señal invalida: esperado reason insufficient_data, obtuvo %s", result.Reason)
+	}
+}
+
+// una señal invalida en el ultimo ciclo bloquea un scale-up que si estaba confirmado.
+func TestInvalidLatestSignalBlocksScaleUp(t *testing.T) {
+	cfg := DefaultPolicyConfig() // ScaleUpConfirmCycles = 2
+	state := ControllerState{CurrentCapacity: 1}
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	// dos ciclos de estres (racha suficiente para subir)...
+	state.RecordSignal(stressedSignal(now), 10)
+	now = now.Add(1 * time.Minute)
+	state.RecordSignal(stressedSignal(now), 10)
+
+	// ...pero el ciclo actual llega sin datos: no se debe actuar.
+	now = now.Add(1 * time.Minute)
+	state.RecordSignal(invalidSignal(now), 10)
+	result := Decide(state, cfg, now)
+
+	if result.Decision != MaintainCapacity {
+		t.Errorf("ultima señal invalida: esperado MAINTAIN_CAPACITY, obtuvo %s", result.Decision)
+	}
+}
+
+// sin historial, tampoco se actua.
+func TestEmptyHistoryIsInsufficientData(t *testing.T) {
+	cfg := DefaultPolicyConfig()
+	state := ControllerState{CurrentCapacity: 3}
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	result := Decide(state, cfg, now)
+	if result.Decision != MaintainCapacity || result.Reason != "insufficient_data" {
+		t.Errorf("historial vacio: esperado MAINTAIN_CAPACITY/insufficient_data, obtuvo %s/%s", result.Decision, result.Reason)
 	}
 }
