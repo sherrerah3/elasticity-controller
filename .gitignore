@@ -3,3 +3,13 @@
 script.aws
 *__pycache__
 results/
+
+# Claves privadas (labsuser.pem de AWS Academy, etc.)
+*.pem
+
+# Terraform: providers descargados, estado (puede contener secretos) y tfvars
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
