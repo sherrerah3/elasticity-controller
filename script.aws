@@ -1,0 +1,80 @@
+#!/bin/bash
+set -euo pipefail
+
+# 1. Actualizar paquetes e instalar dependencias base
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y python3 python3-pip python3-venv
+
+APP_DIR=/opt/autoscaler-app
+mkdir -p "$APP_DIR"
+
+# 2. Escribir el codigo de la aplicacion Flask
+cat <<'PYEOF' > "$APP_DIR/app.py"
+import hashlib
+import time
+from flask import Flask, jsonify, request
+
+app = Flask(__name__)
+
+@app.route("/", methods=["GET"])
+def index():
+    return "Hello, world - app de prueba del autoscaler\n", 200
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"}), 200
+
+@app.route("/work", methods=["GET"])
+def work():
+    raw_iterations = request.args.get("iterations", default="100000")
+    try:
+        iterations = int(raw_iterations)
+    except ValueError:
+        return "parametro 'iterations' invalido\n", 400
+
+    start_time = time.time()
+    digest = b"si3016-autoscaler"
+    for _ in range(iterations):
+        digest = hashlib.sha256(digest).digest()
+    elapsed_seconds = time.time() - start_time
+
+    return jsonify({
+        "iterations": iterations,
+        "elapsed_seconds": elapsed_seconds
+    }), 200
+PYEOF
+
+# 3. Lista de dependencias
+cat <<'REQEOF' > "$APP_DIR/requirements.txt"
+flask
+gunicorn
+REQEOF
+
+# 4. Entorno virtual e instalacion de librerias
+python3 -m venv "$APP_DIR/venv"
+"$APP_DIR/venv/bin/pip" install --quiet -r "$APP_DIR/requirements.txt"
+
+# 5. Permisos de directorio para el usuario ubuntu
+chown -R ubuntu:ubuntu "$APP_DIR"
+
+# 6. Servicio Systemd
+cat <<'UNITEOF' > /etc/systemd/system/autoscaler-app.service
+[Unit]
+Description=Autoscaler test app (Flask + gunicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/autoscaler-app
+ExecStart=/opt/autoscaler-app/venv/bin/gunicorn --bind 0.0.0.0:8080 --workers 2 app:app
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+
+# 7. Activar y levantar el servicio
+systemctl daemon-reload
+systemctl enable --now autoscaler-app.service
