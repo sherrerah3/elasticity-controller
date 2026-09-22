@@ -6,14 +6,31 @@ correrlo como servicio, probarlo end-to-end y recoger la evidencia.
 Todo se ejecuta desde tu WSL, con las credenciales de AWS Academy cargadas.
 La AMI de la app ya está construida: `ami-09a801a9696d3cc3d`.
 
+> Nota: los valores concretos (IPs, ARNs) cambian en cada `terraform apply`.
+> Toma los tuyos de `terraform output` y reemplaza los `<...>` de esta guía.
+
 ---
 
-## 0. Levantar la infraestructura
+## 0. Credenciales y región
+
+Carga las credenciales del Learner Lab en `~/.aws/credentials` (bloque de
+"AWS Details" -> "AWS CLI") y fija la región para toda la sesión:
+
+```bash
+export AWS_DEFAULT_REGION=us-east-1
+aws sts get-caller-identity      # confirma que las credenciales sirven
+```
+
+Luego levanta la infraestructura:
 
 ```bash
 cd autoscaler/infra
 terraform apply        # escribe "yes" para confirmar
 ```
+
+Esto crea también una **instancia semilla** de la app, de modo que el controlador
+arranca con una instancia sana que observar (no hay que hacer nada extra para el
+arranque en frío).
 
 Cuando termine, guarda los outputs (los usarás en varios pasos):
 
@@ -53,6 +70,30 @@ GOOS=linux GOARCH=amd64 /usr/local/go/bin/go build -o autoscaler-controller .
 ```
 
 Esto crea el archivo `autoscaler-controller` (un solo binario, sin dependencias).
+
+---
+
+## 1b. (Opcional pero recomendado) Validar permisos con `cmd/observe`
+
+Antes de arrancar el controlador completo, confirma que el rol de AWS permite
+leer métricas. Este comando solo lee (no actúa):
+
+```bash
+TG_ARN=$(cd infra && terraform output -raw target_group_arn)
+TG_DIM=$(echo "$TG_ARN" | sed 's#.*:\(targetgroup/.*\)#\1#')
+LB_DIM=$(aws elbv2 describe-load-balancers --names autoscaler-alb \
+  --query 'LoadBalancers[0].LoadBalancerArn' --output text \
+  | sed 's#.*:loadbalancer/\(app/.*\)#\1#')
+
+go run ./cmd/observe -target-group-arn="$TG_ARN" -tg-dimension="$TG_DIM" -lb-dimension="$LB_DIM"
+```
+
+Si imprime las señales en JSON (aunque sea con `valid: false` por falta de
+tráfico), los permisos funcionan. Si falla con `AccessDenied`, hay que resolver
+permisos antes de seguir.
+
+Nota: la latencia P95 solo aparece cuando hay tráfico reciente (el ALB solo
+publica esa métrica cuando hay peticiones). En reposo es normal ver `valid: false`.
 
 ---
 
@@ -134,16 +175,21 @@ tail -f /home/ubuntu/decisions.jsonl
 
 ## 5. Prueba end-to-end de DEMANDA (con k6)
 
-Desde tu WSL (no dentro del controller), genera carga contra el ALB.
-Edita `constant-load.js` para que `BASE_URL` apunte al `alb_dns_name`, o pásalo por variable:
+Desde tu WSL (no dentro del controller), genera carga contra el **DNS del ALB en
+el puerto 80** (el ALB reenvía al 8080 interno). Los parámetros van por `-e`:
 
 ```bash
-BASE_URL="http://<alb_dns_name>" RATE=15 k6 run constant-load.js
+k6 run -e BASE_URL="http://<alb_dns_name>" -e RATE=25 -e ITERATIONS=60000 -e DURATION=5m constant-load.js
 ```
 
-Observa en el controller (en `decisions.jsonl` o journalctl) cómo, tras un par
-de ciclos de estrés confirmado, decide INCREASE_CAPACITY y lanza instancias.
-Al parar k6, tras los cooldowns, debería decidir REDUCE_CAPACITY.
+- `RATE` = peticiones por segundo. `ITERATIONS` = trabajo (CPU) por petición.
+- Calibración: `RATE=25 ITERATIONS=60000` sube la carga lo suficiente para
+  disparar el escalado sin colapsar la app (peticiones muy pesadas saturan tanto
+  que matan el health check antes de escalar).
+
+Observa en el controller (`tail -f /home/ubuntu/decisions.jsonl`) cómo, tras 2
+ciclos de estrés confirmado, decide `INCREASE_CAPACITY` y lanza una instancia.
+Al parar k6, tras los cooldowns y 3 ciclos cómodos, decide `REDUCE_CAPACITY`.
 
 ---
 
