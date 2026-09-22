@@ -1,13 +1,6 @@
-# ============================================================
-# Instancia semilla de la app (arranque en frio)
-# ============================================================
-# El controller no crea instancias "de la nada": necesita al menos una que
-# observar para producir señales validas. Terraform lanza esta primera instancia
-# con el MISMO tag gestionado que usa el controller, de modo que a partir de ahi
-# el controller la cuenta como parte del pool y puede subir o bajar desde 1.
-#
-# Va en una subred privada, con el SG de la app, y se registra en el target group
-# para empezar a recibir trafico del ALB de inmediato.
+# Instancia semilla de la app para el arranque en frio: da al controller algo
+# que observar desde el inicio. Lleva el mismo tag gestionado, asi pasa a ser
+# parte del pool y el controller puede subir/bajar desde 1.
 
 resource "aws_instance" "app_seed" {
   ami                    = var.app_ami
