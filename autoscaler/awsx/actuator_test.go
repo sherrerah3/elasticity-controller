@@ -3,7 +3,6 @@ package awsx
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -14,10 +13,11 @@ import (
 	"autoscaler/controller"
 )
 
-// mock EC2 que registra el orden de las llamadas. Reporta runID como running.
+// mock EC2 que registra las llamadas. running controla el estado reportado.
 type mockEC2 struct {
 	runID       string
 	instanceIDs []string
+	running     bool // si true, DescribeInstances por ID reporta "running"
 	calls       []string
 }
 
@@ -32,13 +32,17 @@ func (m *mockEC2) TerminateInstances(ctx context.Context, in *ec2.TerminateInsta
 	return &ec2.TerminateInstancesOutput{}, nil
 }
 func (m *mockEC2) DescribeInstances(ctx context.Context, in *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
-	// consulta por IDs (waitRunning): devuelve runID en estado running.
+	// consulta por IDs: reporta el estado segun m.running.
 	if len(in.InstanceIds) > 0 {
+		state := ec2types.InstanceStateNamePending
+		if m.running {
+			state = ec2types.InstanceStateNameRunning
+		}
 		var insts []ec2types.Instance
 		for _, id := range in.InstanceIds {
 			insts = append(insts, ec2types.Instance{
 				InstanceId: aws.String(id),
-				State:      &ec2types.InstanceState{Name: ec2types.InstanceStateNameRunning},
+				State:      &ec2types.InstanceState{Name: state},
 			})
 		}
 		return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: insts}}}, nil
@@ -82,14 +86,11 @@ func testConfig() ActuatorConfig {
 		AMI: "ami-x", InstanceType: "t3.micro", SubnetID: "subnet-x", SecurityGroupID: "sg-x",
 		ManagedTagKey: "autoscaler-managed", ManagedTagValue: "true",
 		TargetGroupARN: "arn:tg", AppPort: 8080,
-		// timeouts amplios y poll rapido para que los tests no esperen.
-		RunningTimeout: time.Second, HealthyTimeout: time.Second, PollInterval: time.Millisecond,
-		DeregisterDelay: 0,
 	}
 }
 
-// ScaleUp: RunInstances -> (running) -> RegisterTargets -> (healthy). Orden run luego register.
-func TestScaleUpLaunchesThenRegisters(t *testing.T) {
+// ScaleUp solo lanza (no bloqueante): dispara RunInstances y NO registra todavia.
+func TestScaleUpOnlyLaunches(t *testing.T) {
 	ec2m := &mockEC2{runID: "i-new"}
 	elb := &mockELBTargets{}
 	a := NewActuator(ec2m, elb, testConfig())
@@ -97,26 +98,48 @@ func TestScaleUpLaunchesThenRegisters(t *testing.T) {
 	if err := a.ScaleUp(context.Background()); err != nil {
 		t.Fatalf("ScaleUp fallo: %v", err)
 	}
-	if len(ec2m.calls) == 0 || ec2m.calls[0] != "run" {
-		t.Errorf("esperaba 'run' primero, obtuvo %v", ec2m.calls)
+	if len(ec2m.calls) != 1 || ec2m.calls[0] != "run" {
+		t.Errorf("esperaba solo 'run', obtuvo %v", ec2m.calls)
 	}
-	if len(elb.calls) != 1 || elb.calls[0] != "register" {
-		t.Errorf("esperaba una unica 'register' tras running, obtuvo %v", elb.calls)
+	if len(elb.calls) != 0 {
+		t.Errorf("ScaleUp no debe registrar aun (eso lo hace AdvanceProvisioning), obtuvo %v", elb.calls)
 	}
 }
 
-// ScaleUp emite la medicion de aprovisionamiento al sink.
-func TestScaleUpEmitsProvisioning(t *testing.T) {
-	ec2m := &mockEC2{runID: "i-new"}
-	a := NewActuator(ec2m, &mockELBTargets{}, testConfig())
+// AdvanceProvisioning: cuando la instancia esta running la registra (t1) y
+// cuando esta healthy emite la medicion t0/t1/t2.
+func TestAdvanceProvisioningRegistersThenMeasures(t *testing.T) {
+	ec2m := &mockEC2{runID: "i-new", running: false}
+	elb := &mockELBTargets{}
+	a := NewActuator(ec2m, elb, testConfig())
 	sink := &provSinkSpy{}
 	a.ProvSink = sink
 
+	// lanzar (queda pendiente, aun no running).
 	if err := a.ScaleUp(context.Background()); err != nil {
 		t.Fatalf("ScaleUp fallo: %v", err)
 	}
+
+	// tick 1: aun pending -> no registra ni emite.
+	a.AdvanceProvisioning(context.Background())
+	if len(elb.calls) != 0 {
+		t.Errorf("no debia registrar mientras pending, obtuvo %v", elb.calls)
+	}
+
+	// ahora pasa a running -> siguiente advance registra (t1).
+	ec2m.running = true
+	a.AdvanceProvisioning(context.Background())
+	if len(elb.calls) == 0 || elb.calls[0] != "register" {
+		t.Errorf("esperaba 'register' al estar running, obtuvo %v", elb.calls)
+	}
+	if len(sink.records) != 0 {
+		t.Errorf("no debia emitir aun (falta healthy), obtuvo %d", len(sink.records))
+	}
+
+	// el mock reporta healthy por defecto -> siguiente advance emite (t2).
+	a.AdvanceProvisioning(context.Background())
 	if len(sink.records) != 1 || sink.records[0].InstanceID != "i-new" {
-		t.Fatalf("esperaba 1 registro de aprovisionamiento para i-new, obtuvo %+v", sink.records)
+		t.Fatalf("esperaba 1 medicion para i-new, obtuvo %+v", sink.records)
 	}
 }
 
@@ -137,23 +160,27 @@ func TestScaleDownDeregistersBeforeTerminate(t *testing.T) {
 	}
 }
 
-// scale-in con DeregisterDelay>0 sondea salud y termina cuando el target esta unused.
-func TestScaleDownWaitsForDrainViaHealth(t *testing.T) {
-	ec2m := &mockEC2{instanceIDs: []string{"i-1"}}
-	elb := &mockELBTargets{healthState: elbtypes.TargetHealthStateEnumUnused}
-	cfg := testConfig()
-	cfg.DeregisterDelay = time.Second // activa el poll de drenado
-	a := NewActuator(ec2m, elb, cfg)
+// Replace lanza una sustituta y retira la mala.
+func TestReplaceLaunchesAndRetires(t *testing.T) {
+	ec2m := &mockEC2{runID: "i-new"}
+	elb := &mockELBTargets{}
+	a := NewActuator(ec2m, elb, testConfig())
 
-	if err := a.ScaleDown(context.Background()); err != nil {
-		t.Fatalf("ScaleDown fallo: %v", err)
+	if err := a.Replace(context.Background(), "i-bad"); err != nil {
+		t.Fatalf("Replace fallo: %v", err)
 	}
-	// debe haber consultado la salud (drenado) y luego terminado.
-	if len(elb.calls) == 0 || elb.calls[0] != "deregister" {
-		t.Errorf("esperaba 'deregister' primero, obtuvo %v", elb.calls)
+	// debe haber lanzado (run) y terminado la mala (terminate).
+	hasRun, hasTerminate := false, false
+	for _, c := range ec2m.calls {
+		if c == "run" {
+			hasRun = true
+		}
+		if c == "terminate" {
+			hasTerminate = true
+		}
 	}
-	if ec2m.calls[len(ec2m.calls)-1] != "terminate" {
-		t.Errorf("esperaba 'terminate' al final tras drenar, obtuvo %v", ec2m.calls)
+	if !hasRun || !hasTerminate {
+		t.Errorf("esperaba run + terminate, obtuvo %v", ec2m.calls)
 	}
 }
 

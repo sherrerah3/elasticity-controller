@@ -2,6 +2,7 @@ package awsx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	elbtypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/aws/smithy-go"
 
 	"autoscaler/controller"
 )
@@ -42,30 +44,29 @@ type ActuatorConfig struct {
 	ManagedTagValue    string // p.ej. "true"
 	TargetGroupARN     string
 	AppPort            int32
-
-	// tiempos de espera bloqueante durante el aprovisionamiento y el retiro.
-	RunningTimeout  time.Duration // maximo a esperar el estado running (t1)
-	HealthyTimeout  time.Duration // maximo a esperar el estado healthy (t2)
-	DeregisterDelay time.Duration // maximo a esperar el drenado antes de terminar
-	PollInterval    time.Duration // cada cuanto sondear el estado
 }
 
 // ejecuta las decisiones sobre EC2 + ALB. Implementa controller.Actuator.
+// Todas las operaciones son NO bloqueantes: disparan la llamada a AWS y
+// retornan de inmediato. El loop, tick a tick, observa el progreso real.
 type Actuator struct {
 	EC2      ec2API
 	ELB      elbTargetsAPI
 	Cfg      ActuatorConfig
 	ProvSink controller.ProvisioningSink // opcional; recibe la medicion t0/t1/t2
 
-	mu          sync.Mutex
-	launchTimes map[string]time.Time // t0 por instancia (historico)
+	mu      sync.Mutex
+	pending map[string]*provisioning // instancias lanzadas aun no healthy
+}
+
+// estado de una instancia en aprovisionamiento (para medir t0/t1/t2 sin bloquear).
+type provisioning struct {
+	t0, t1     time.Time
+	registered bool
 }
 
 func NewActuator(ec2c ec2API, elb elbTargetsAPI, cfg ActuatorConfig) *Actuator {
-	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = 5 * time.Second
-	}
-	return &Actuator{EC2: ec2c, ELB: elb, Cfg: cfg, launchTimes: map[string]time.Time{}}
+	return &Actuator{EC2: ec2c, ELB: elb, Cfg: cfg, pending: map[string]*provisioning{}}
 }
 
 // numero de instancias gestionadas en estado pending/running (fuente de verdad).
@@ -77,10 +78,9 @@ func (a *Actuator) CurrentCapacity(ctx context.Context) (int, error) {
 	return len(ids), nil
 }
 
-// lanza una instancia y espera hasta que este disponible de verdad:
-// RunInstances (t0) -> running (t1) -> RegisterTargets -> healthy (t2).
-// Bloqueante con timeout. Emite la medicion de aprovisionamiento al sink.
-func (a *Actuator) ScaleUp(ctx context.Context) error {
+// lanza una instancia y retorna de inmediato (no espera running ni healthy).
+// Devuelve el ID para que el loop rastree su aprovisionamiento en ticks siguientes.
+func (a *Actuator) Launch(ctx context.Context) (string, error) {
 	out, err := a.EC2.RunInstances(ctx, &ec2.RunInstancesInput{
 		ImageId:            aws.String(a.Cfg.AMI),
 		InstanceType:       ec2types.InstanceType(a.Cfg.InstanceType),
@@ -92,154 +92,76 @@ func (a *Actuator) ScaleUp(ctx context.Context) error {
 		UserData:           optString(a.Cfg.UserDataBase64),
 		IamInstanceProfile: a.iamProfile(),
 		TagSpecifications:  a.tagSpec(),
+		Monitoring:         &ec2types.RunInstancesMonitoringEnabled{Enabled: aws.Bool(true)},
 	})
 	if err != nil {
-		return fmt.Errorf("RunInstances: %w", err)
+		return "", fmt.Errorf("RunInstances: %w", err)
 	}
 	if len(out.Instances) == 0 || out.Instances[0].InstanceId == nil {
-		return fmt.Errorf("RunInstances no devolvio InstanceId")
+		return "", fmt.Errorf("RunInstances no devolvio InstanceId")
 	}
 	id := *out.Instances[0].InstanceId
 
-	t0 := time.Now()
+	// registra la instancia para rastrear su aprovisionamiento (t0 = ahora).
 	a.mu.Lock()
-	a.launchTimes[id] = t0
+	a.pending[id] = &provisioning{t0: time.Now()}
 	a.mu.Unlock()
 
-	// t1: para target_type=instance, AWS exige running antes de registrar.
-	t1, err := a.waitRunning(ctx, id)
-	if err != nil {
-		return fmt.Errorf("esperando running(%s): %w", id, err)
-	}
-
-	if _, err := a.ELB.RegisterTargets(ctx, &elasticloadbalancingv2.RegisterTargetsInput{
-		TargetGroupArn: aws.String(a.Cfg.TargetGroupARN),
-		Targets:        []elbtypes.TargetDescription{{Id: aws.String(id), Port: aws.Int32(a.Cfg.AppPort)}},
-	}); err != nil {
-		return fmt.Errorf("RegisterTargets(%s): %w", id, err)
-	}
-
-	// t2: el momento real en que empieza a recibir trafico.
-	t2, err := a.waitHealthy(ctx, id)
-	if err != nil {
-		return fmt.Errorf("esperando healthy(%s): %w", id, err)
-	}
-
-	a.emitProvisioning(id, t0, t1, t2)
-	return nil
+	return id, nil
 }
 
-// desregistra una instancia, espera el drenado y la termina.
-func (a *Actuator) ScaleDown(ctx context.Context) error {
-	ids, err := a.managedInstanceIDs(ctx)
-	if err != nil {
-		return err
-	}
-	if len(ids) == 0 {
-		return fmt.Errorf("no hay instancias gestionadas para reducir")
-	}
-	victim := ids[len(ids)-1] // la mas reciente; criterio simple y suficiente para 1-5
-	return a.deregisterAndTerminate(ctx, victim)
-}
-
-// reemplaza una instancia unhealthy: lanza una nueva y luego termina la mala.
-// Orden lanzar->terminar para no bajar de capacidad (implementa controller.Replacer).
-func (a *Actuator) Replace(ctx context.Context, badInstanceID string) error {
-	if err := a.ScaleUp(ctx); err != nil {
-		return fmt.Errorf("reemplazo: no se pudo lanzar sustituta: %w", err)
-	}
-	if err := a.deregisterAndTerminate(ctx, badInstanceID); err != nil {
-		return fmt.Errorf("reemplazo: no se pudo retirar %s: %w", badInstanceID, err)
-	}
-	return nil
-}
-
-// espera hasta que la instancia este running (t1), sondeando cada PollInterval.
-func (a *Actuator) waitRunning(ctx context.Context, id string) (time.Time, error) {
-	deadline := time.Now().Add(a.Cfg.RunningTimeout)
-	for {
-		out, err := a.EC2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{id}})
-		if err != nil {
-			return time.Time{}, fmt.Errorf("DescribeInstances: %w", err)
-		}
-		if instanceState(out, id) == "running" {
-			return time.Now(), nil
-		}
-		if a.Cfg.RunningTimeout > 0 && time.Now().After(deadline) {
-			return time.Time{}, fmt.Errorf("timeout esperando running")
-		}
-		if err := sleepCtx(ctx, a.Cfg.PollInterval); err != nil {
-			return time.Time{}, err
-		}
-	}
-}
-
-// espera hasta que el target este healthy en el ALB (t2), sondeando cada PollInterval.
-func (a *Actuator) waitHealthy(ctx context.Context, id string) (time.Time, error) {
-	deadline := time.Now().Add(a.Cfg.HealthyTimeout)
-	for {
-		state, err := a.targetState(ctx, id)
-		if err != nil {
-			return time.Time{}, err
-		}
-		if state == string(elbtypes.TargetHealthStateEnumHealthy) {
-			return time.Now(), nil
-		}
-		if a.Cfg.HealthyTimeout > 0 && time.Now().After(deadline) {
-			return time.Time{}, fmt.Errorf("timeout esperando healthy (ultimo estado: %s)", state)
-		}
-		if err := sleepCtx(ctx, a.Cfg.PollInterval); err != nil {
-			return time.Time{}, err
-		}
-	}
-}
-
-// desregistra del target group, espera el drenado y termina la instancia dada.
-func (a *Actuator) deregisterAndTerminate(ctx context.Context, id string) error {
-	if _, err := a.ELB.DeregisterTargets(ctx, &elasticloadbalancingv2.DeregisterTargetsInput{
-		TargetGroupArn: aws.String(a.Cfg.TargetGroupARN),
-		Targets:        []elbtypes.TargetDescription{{Id: aws.String(id), Port: aws.Int32(a.Cfg.AppPort)}},
-	}); err != nil {
-		return fmt.Errorf("DeregisterTargets(%s): %w", id, err)
-	}
-
-	// espera a que el target termine de drenar (deja de estar draining) antes de
-	// terminar, en vez de un sleep fijo. DeregisterDelay es el timeout maximo.
-	if err := a.waitDrained(ctx, id); err != nil {
-		return err
-	}
-
-	if _, err := a.EC2.TerminateInstances(ctx, &ec2.TerminateInstancesInput{InstanceIds: []string{id}}); err != nil {
-		return fmt.Errorf("TerminateInstances(%s): %w", id, err)
-	}
+// AdvanceProvisioning avanza el aprovisionamiento de las instancias lanzadas,
+// sin bloquear: por cada una pendiente, si ya esta running la registra (t1),
+// y si el ALB la reporta healthy emite la medicion t0/t1/t2 (t2). Lo llama el
+// loop una vez por tick.
+func (a *Actuator) AdvanceProvisioning(ctx context.Context) {
 	a.mu.Lock()
-	delete(a.launchTimes, id)
+	ids := make([]string, 0, len(a.pending))
+	for id := range a.pending {
+		ids = append(ids, id)
+	}
 	a.mu.Unlock()
-	return nil
+
+	for _, id := range ids {
+		a.advanceOne(ctx, id)
+	}
 }
 
-// espera a que el target deje de estar 'draining'. Termina cuando llega a
-// 'unused' o desaparece del target group, o al agotar DeregisterDelay (timeout).
-func (a *Actuator) waitDrained(ctx context.Context, id string) error {
-	if a.Cfg.DeregisterDelay <= 0 {
-		return nil // sin espera configurada: terminar de una vez.
+func (a *Actuator) advanceOne(ctx context.Context, id string) {
+	a.mu.Lock()
+	p := a.pending[id]
+	a.mu.Unlock()
+	if p == nil {
+		return
 	}
-	deadline := time.Now().Add(a.Cfg.DeregisterDelay)
-	for {
-		state, err := a.targetState(ctx, id)
-		if err != nil {
-			return err
+
+	// paso 1: esperar running para poder registrar (target_type=instance).
+	if p.t1.IsZero() {
+		running, err := a.isRunning(ctx, id)
+		if err != nil || !running {
+			return // aun no; se reintenta el proximo tick.
 		}
-		// "" (ya no aparece) o "unused": el drenado termino.
-		if state == "" || state == string(elbtypes.TargetHealthStateEnumUnused) {
-			return nil
+		if err := a.register(ctx, id); err != nil {
+			return // se reintenta el proximo tick.
 		}
-		if time.Now().After(deadline) {
-			return nil // timeout: el drenado tardo demasiado, terminamos igual.
-		}
-		if err := sleepCtx(ctx, a.Cfg.PollInterval); err != nil {
-			return err
-		}
+		a.mu.Lock()
+		p.t1 = time.Now()
+		p.registered = true
+		a.mu.Unlock()
+		return
+	}
+
+	// paso 2: esperar healthy para cerrar la medicion.
+	state, err := a.targetState(ctx, id)
+	if err != nil {
+		return
+	}
+	if state == string(elbtypes.TargetHealthStateEnumHealthy) {
+		t2 := time.Now()
+		a.emitProvisioning(id, p.t0, p.t1, t2)
+		a.mu.Lock()
+		delete(a.pending, id)
+		a.mu.Unlock()
 	}
 }
 
@@ -259,13 +181,71 @@ func (a *Actuator) emitProvisioning(id string, t0, t1, t2 time.Time) {
 	})
 }
 
-// estado de salud de un target concreto en el target group ("" si no aparece).
+// ScaleUp lanza una instancia (no bloqueante). Implementa controller.Actuator.
+func (a *Actuator) ScaleUp(ctx context.Context) error {
+	_, err := a.Launch(ctx)
+	return err
+}
+
+// ScaleDown desregistra y termina una instancia gestionada (no bloqueante).
+// El drenado de conexiones lo maneja el deregistration_delay del target group.
+func (a *Actuator) ScaleDown(ctx context.Context) error {
+	ids, err := a.managedInstanceIDs(ctx)
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("no hay instancias gestionadas para reducir")
+	}
+	victim := ids[len(ids)-1] // la mas reciente; criterio simple y suficiente para 1-5
+	return a.retire(ctx, victim)
+}
+
+// Replace lanza una sustituta y retira la mala (no bloqueante). Implementa Replacer.
+func (a *Actuator) Replace(ctx context.Context, badInstanceID string) error {
+	if _, err := a.Launch(ctx); err != nil {
+		return fmt.Errorf("reemplazo: no se pudo lanzar sustituta: %w", err)
+	}
+	if err := a.retire(ctx, badInstanceID); err != nil {
+		return fmt.Errorf("reemplazo: no se pudo retirar %s: %w", badInstanceID, err)
+	}
+	return nil
+}
+
+// registra una instancia en el target group. Tolera el NotFound transitorio.
+func (a *Actuator) register(ctx context.Context, id string) error {
+	_, err := a.ELB.RegisterTargets(ctx, &elasticloadbalancingv2.RegisterTargetsInput{
+		TargetGroupArn: aws.String(a.Cfg.TargetGroupARN),
+		Targets:        []elbtypes.TargetDescription{{Id: aws.String(id), Port: aws.Int32(a.Cfg.AppPort)}},
+	})
+	if err != nil && !isTransientNotFound(err) {
+		return fmt.Errorf("RegisterTargets(%s): %w", id, err)
+	}
+	return nil
+}
+
+// indica si una instancia esta en estado running.
+func (a *Actuator) isRunning(ctx context.Context, id string) (bool, error) {
+	out, err := a.EC2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{id}})
+	if err != nil {
+		if isTransientNotFound(err) {
+			return false, nil // aun no se propaga: no es running todavia.
+		}
+		return false, fmt.Errorf("DescribeInstances: %w", err)
+	}
+	return instanceState(out, id) == "running", nil
+}
+
+// estado del target en el ALB ("" si no aparece).
 func (a *Actuator) targetState(ctx context.Context, id string) (string, error) {
 	out, err := a.ELB.DescribeTargetHealth(ctx, &elasticloadbalancingv2.DescribeTargetHealthInput{
 		TargetGroupArn: aws.String(a.Cfg.TargetGroupARN),
 		Targets:        []elbtypes.TargetDescription{{Id: aws.String(id), Port: aws.Int32(a.Cfg.AppPort)}},
 	})
 	if err != nil {
+		if isTransientNotFound(err) {
+			return "", nil
+		}
 		return "", fmt.Errorf("DescribeTargetHealth(%s): %w", id, err)
 	}
 	for _, d := range out.TargetHealthDescriptions {
@@ -274,6 +254,20 @@ func (a *Actuator) targetState(ctx context.Context, id string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// retire desregistra del target group y termina la instancia (no bloqueante).
+func (a *Actuator) retire(ctx context.Context, id string) error {
+	if _, err := a.ELB.DeregisterTargets(ctx, &elasticloadbalancingv2.DeregisterTargetsInput{
+		TargetGroupArn: aws.String(a.Cfg.TargetGroupARN),
+		Targets:        []elbtypes.TargetDescription{{Id: aws.String(id), Port: aws.Int32(a.Cfg.AppPort)}},
+	}); err != nil && !isTransientNotFound(err) {
+		return fmt.Errorf("DeregisterTargets(%s): %w", id, err)
+	}
+	if _, err := a.EC2.TerminateInstances(ctx, &ec2.TerminateInstancesInput{InstanceIds: []string{id}}); err != nil {
+		return fmt.Errorf("TerminateInstances(%s): %w", id, err)
+	}
+	return nil
 }
 
 // instancias con el tag gestionado y en estado pending/running.
@@ -327,20 +321,21 @@ func instanceState(out *ec2.DescribeInstancesOutput, id string) string {
 	return ""
 }
 
-// duerme d respetando la cancelacion del contexto.
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(d):
-		return nil
-	}
-}
-
 // devuelve nil si la cadena esta vacia (para campos opcionales del SDK).
 func optString(s string) *string {
 	if s == "" {
 		return nil
 	}
 	return aws.String(s)
+}
+
+// true si el error es un "aun no existe" transitorio por consistencia eventual
+// de AWS (el ID recien creado todavia no se propaga). No es un fallo real.
+func isTransientNotFound(err error) bool {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		code := apiErr.ErrorCode()
+		return code == "InvalidInstanceID.NotFound" || code == "InvalidTarget.NotFound"
+	}
+	return false
 }
