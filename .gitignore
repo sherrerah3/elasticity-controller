@@ -6,6 +6,9 @@ results/
 # documentacion de estudio del codigo (no se versiona)
 docs/
 
+# binario compilado del controller (se genera con go build)
+autoscaler/autoscaler-controller
+
 # Claves privadas (labsuser.pem de AWS Academy, etc.)
 *.pem
 
