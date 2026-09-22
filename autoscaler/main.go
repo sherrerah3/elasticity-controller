@@ -108,7 +108,8 @@ func buildComponents(ctx context.Context, a buildArgs) (controller.MetricsObserv
 	obs := &awsx.Observer{
 		CW: clients.CW, ELB: clients.ELB,
 		TargetGroupARN: a.tgARN, TGDimension: a.tgDim, LBDimension: a.lbDim,
-		Lookback: 5 * time.Minute, // ventana amplia: evita perder datapoints por el retraso de CloudWatch
+		Lookback:   5 * time.Minute, // ventana amplia: evita perder datapoints por el retraso de CloudWatch
+		MaxDataAge: 2 * time.Minute, // pero descarta datos mas viejos que esto (evita datos rancios)
 	}
 
 	act := awsx.NewActuator(clients.EC2, clients.ELB, awsx.ActuatorConfig{

@@ -38,6 +38,7 @@ func main() {
 		TGDimension:    *tgDim,
 		LBDimension:    *lbDim,
 		Lookback:       *lookback,
+		MaxDataAge:     2 * time.Minute,
 	}
 
 	fmt.Println("Observando una vez (solo lectura, sin actuar)...")

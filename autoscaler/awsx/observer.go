@@ -30,6 +30,7 @@ type Observer struct {
 	TGDimension    string        // valor de la dimension TargetGroup (targetgroup/.../id)
 	LBDimension    string        // valor de la dimension LoadBalancer (app/.../id)
 	Lookback       time.Duration // cuanto se mira hacia atras (amplio, p.ej. 5 min) para no perder datapoints
+	MaxDataAge     time.Duration // descarta datapoints mas viejos que esto (p.ej. 2 min); evita datos rancios
 }
 
 // segundos del periodo de agregacion de CloudWatch (cada datapoint cubre 60s).
@@ -73,17 +74,24 @@ func (o *Observer) Observe(ctx context.Context) (controller.Signals, error) {
 
 	results := indexResults(out.MetricDataResults)
 
+	// umbral de frescura: un datapoint mas viejo que esto se ignora (evita usar
+	// un dato rancio que sigue en la ventana amplia cuando ya no llega tráfico).
+	maxAge := o.MaxDataAge
+	if maxAge <= 0 {
+		maxAge = 2 * time.Minute
+	}
+
 	// P95 de latencia (segundos -> ms). Señal principal.
-	p95, okP95 := latestValue(results["p95"])
+	p95, okP95 := freshestValue(results["p95"], now, maxAge)
 	sig.P95LatencyMillis = p95 * 1000.0
 
 	// requests por target: el datapoint es la suma de UN periodo (60s) -> req/s.
 	// Se divide por el periodo, no por la ventana de consulta.
-	reqCount, okReq := latestValue(results["req"])
+	reqCount, okReq := freshestValue(results["req"], now, maxAge)
 	sig.RequestsPerTarget = reqCount / periodSecs
 
 	// CPU promedio SOLO sobre instancias sanas.
-	cpu, okCPU := averageCPU(results, healthyIDs)
+	cpu, okCPU := averageCPU(results, healthyIDs, now, maxAge)
 	sig.CPUUtilization = cpu
 
 	// datos suficientes si tenemos al menos P95 y CPU (las dos señales de la politica).

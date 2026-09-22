@@ -39,8 +39,22 @@ func targetHealth(id string, state elbtypes.TargetHealthStateEnum) elbtypes.Targ
 	}
 }
 
+// datapoint con timestamp reciente (fresco) por defecto.
 func metricResult(id string, value float64) cwtypes.MetricDataResult {
-	return cwtypes.MetricDataResult{Id: aws.String(id), Values: []float64{value}}
+	return cwtypes.MetricDataResult{
+		Id:         aws.String(id),
+		Values:     []float64{value},
+		Timestamps: []time.Time{time.Now()},
+	}
+}
+
+// datapoint con timestamp viejo (para probar el descarte por frescura).
+func staleMetricResult(id string, value float64, age time.Duration) cwtypes.MetricDataResult {
+	return cwtypes.MetricDataResult{
+		Id:         aws.String(id),
+		Values:     []float64{value},
+		Timestamps: []time.Time{time.Now().Add(-age)},
+	}
 }
 
 // P95 en segundos se convierte a ms; requests (conteo) se convierte a req/s; CPU promedia sanas.
@@ -100,6 +114,34 @@ func TestObserveNoHealthyIsInvalid(t *testing.T) {
 	}
 	if sig.TotalInstances != 1 || sig.HealthyInstances != 0 {
 		t.Errorf("salud: esperaba 0/1, obtuvo %d/%d", sig.HealthyInstances, sig.TotalInstances)
+	}
+}
+
+// un P95 viejo (rancio) se descarta: no debe reportarse como latencia actual.
+func TestObserveDiscardsStaleLatency(t *testing.T) {
+	elb := &mockELB{out: &elasticloadbalancingv2.DescribeTargetHealthOutput{
+		TargetHealthDescriptions: []elbtypes.TargetHealthDescription{
+			targetHealth("i-1", elbtypes.TargetHealthStateEnumHealthy),
+		},
+	}}
+	cw := &mockCW{out: &cloudwatch.GetMetricDataOutput{
+		MetricDataResults: []cwtypes.MetricDataResult{
+			staleMetricResult("p95", 6.7, 10*time.Minute), // dato viejo de 10 min
+			metricResult("cpu_0", 30),                     // CPU si es fresca
+		},
+	}}
+	obs := &Observer{CW: cw, ELB: elb, Lookback: 15 * time.Minute, MaxDataAge: 2 * time.Minute}
+
+	sig, err := obs.Observe(context.Background())
+	if err != nil {
+		t.Fatalf("Observe fallo: %v", err)
+	}
+	if sig.P95LatencyMillis != 0 {
+		t.Errorf("P95 viejo debia descartarse (0), obtuvo %v", sig.P95LatencyMillis)
+	}
+	// sin P95 fresco, la señal no es valida (falta una de las dos señales base).
+	if sig.Valid {
+		t.Error("con P95 rancio la señal no deberia ser valida")
 	}
 }
 

@@ -2,6 +2,7 @@ package awsx
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
@@ -90,22 +91,27 @@ func indexResults(results []cwtypes.MetricDataResult) map[string]cwtypes.MetricD
 	return m
 }
 
-// devuelve el datapoint mas reciente de una serie (o false si no hay datos).
-func latestValue(r cwtypes.MetricDataResult) (float64, bool) {
-	if len(r.Values) == 0 {
+// devuelve el datapoint mas reciente de una serie SOLO si es suficientemente
+// fresco (su timestamp no es mas viejo que maxAge). Evita usar un dato rancio
+// que sigue en la ventana de consulta amplia cuando ya no llegan datos nuevos.
+func freshestValue(r cwtypes.MetricDataResult, now time.Time, maxAge time.Duration) (float64, bool) {
+	if len(r.Values) == 0 || len(r.Timestamps) == 0 {
 		return 0, false
 	}
-	// GetMetricData devuelve los valores mas recientes primero.
+	// GetMetricData devuelve los valores y timestamps mas recientes primero.
+	if now.Sub(r.Timestamps[0]) > maxAge {
+		return 0, false // el dato mas nuevo ya es demasiado viejo: no hay dato actual.
+	}
 	return r.Values[0], true
 }
 
-// promedia la CPU de las series cpu_* (solo instancias sanas). false si ninguna tiene datos.
-func averageCPU(results map[string]cwtypes.MetricDataResult, healthyIDs []string) (float64, bool) {
+// promedia la CPU fresca de las series cpu_* (solo instancias sanas). false si ninguna tiene dato fresco.
+func averageCPU(results map[string]cwtypes.MetricDataResult, healthyIDs []string, now time.Time, maxAge time.Duration) (float64, bool) {
 	var sum float64
 	var n int
 	for i := range healthyIDs {
 		id := fmt.Sprintf("%s%d", cpuIDPrefix, i)
-		if v, ok := latestValue(results[id]); ok {
+		if v, ok := freshestValue(results[id], now, maxAge); ok {
 			sum += v
 			n++
 		}
