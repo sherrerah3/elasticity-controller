@@ -37,10 +37,6 @@ func main() {
 	appPort := flag.Int("app-port", 8080, "puerto de la app")
 	managedTagKey := flag.String("managed-tag-key", "autoscaler-managed", "clave del tag de instancias gestionadas")
 	managedTagValue := flag.String("managed-tag-value", "true", "valor del tag de instancias gestionadas")
-	deregDelay := flag.Duration("deregister-delay", 90*time.Second, "maximo a esperar el drenado antes de terminar")
-	runningTimeout := flag.Duration("running-timeout", 3*time.Minute, "maximo a esperar el estado running (t1)")
-	healthyTimeout := flag.Duration("healthy-timeout", 5*time.Minute, "maximo a esperar el estado healthy (t2)")
-	pollInterval := flag.Duration("poll-interval", 5*time.Second, "cada cuanto sondear estado durante el aprovisionamiento")
 	flag.Parse()
 
 	cfg := controller.DefaultPolicyConfig()
@@ -58,13 +54,12 @@ func main() {
 
 	obs, act := buildComponents(context.Background(), buildArgs{
 		dryRun: *dryRun, region: *region, maxRetries: *maxRetries,
-		minInstances: cfg.MinInstances, window: *interval,
-		tgARN: *tgARN, tgDim: *tgDim, lbDim: *lbDim,
+		minInstances: cfg.MinInstances,
+		tgARN:        *tgARN, tgDim: *tgDim, lbDim: *lbDim,
 		subnetID: *subnetID, sgID: *sgID, ami: *ami, instanceType: *instanceType,
 		iamProfile: *iamProfile, keyName: *keyName, userDataFile: *userDataFile,
 		appPort: int32(*appPort), managedTagKey: *managedTagKey, managedTagValue: *managedTagValue,
-		deregDelay: *deregDelay, runningTimeout: *runningTimeout, healthyTimeout: *healthyTimeout,
-		pollInterval: *pollInterval, provSink: provSink,
+		provSink: provSink,
 	})
 
 	loop := controller.NewLoop(obs, act, cfg, *interval)
@@ -90,16 +85,12 @@ type buildArgs struct {
 	region                         string
 	maxRetries                     int
 	minInstances                   int
-	window                         time.Duration
 	tgARN, tgDim, lbDim            string
 	subnetID, sgID, ami            string
 	instanceType, iamProfile       string
 	keyName, userDataFile          string
 	appPort                        int32
 	managedTagKey, managedTagValue string
-	deregDelay                     time.Duration
-	runningTimeout, healthyTimeout time.Duration
-	pollInterval                   time.Duration
 	provSink                       controller.ProvisioningSink
 }
 
@@ -117,7 +108,7 @@ func buildComponents(ctx context.Context, a buildArgs) (controller.MetricsObserv
 	obs := &awsx.Observer{
 		CW: clients.CW, ELB: clients.ELB,
 		TargetGroupARN: a.tgARN, TGDimension: a.tgDim, LBDimension: a.lbDim,
-		Window: a.window,
+		Lookback: 5 * time.Minute, // ventana amplia: evita perder datapoints por el retraso de CloudWatch
 	}
 
 	act := awsx.NewActuator(clients.EC2, clients.ELB, awsx.ActuatorConfig{
@@ -126,8 +117,6 @@ func buildComponents(ctx context.Context, a buildArgs) (controller.MetricsObserv
 		UserDataBase64: loadUserData(a.userDataFile),
 		ManagedTagKey:  a.managedTagKey, ManagedTagValue: a.managedTagValue,
 		TargetGroupARN: a.tgARN, AppPort: a.appPort,
-		RunningTimeout: a.runningTimeout, HealthyTimeout: a.healthyTimeout,
-		DeregisterDelay: a.deregDelay, PollInterval: a.pollInterval,
 	})
 	act.ProvSink = a.provSink
 	return obs, act
