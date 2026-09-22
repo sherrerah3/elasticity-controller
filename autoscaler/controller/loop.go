@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"log"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,8 +16,9 @@ type Loop struct {
 	Interval   time.Duration
 	MaxHistory int
 
-	state  ControllerState
-	health *HealthTracker
+	state   ControllerState
+	health  *HealthTracker
+	ticking atomic.Bool // evita que dos ticks se solapen
 }
 
 // crea un Loop con historial suficiente para el mayor de los confirm cycles.
@@ -57,11 +59,32 @@ func (l *Loop) Run(ctx context.Context) {
 
 // un ciclo completo: sincroniza capacidad real, observa, decide y actua.
 func (l *Loop) Tick(ctx context.Context, now time.Time) DecisionResult {
-	// opcion A: la capacidad real de AWS es la fuente de verdad.
-	if capacity, err := l.Actuator.CurrentCapacity(ctx); err != nil {
-		log.Println("no se pudo leer la capacidad real, se usa el estado interno:", err)
-	} else {
-		l.state.CurrentCapacity = capacity
+	// guardia: si un tick anterior sigue en curso, descarta este disparo.
+	if !l.ticking.CompareAndSwap(false, true) {
+		return DecisionResult{Decision: MaintainCapacity, Reason: "tick_in_progress"}
+	}
+	defer l.ticking.Store(false)
+
+	// avanza el aprovisionamiento de instancias lanzadas en ticks previos
+	// (las registra al estar running y mide t0/t1/t2). No bloqueante.
+	if adv, ok := l.Actuator.(ProvisioningAdvancer); ok {
+		adv.AdvanceProvisioning(ctx)
+	}
+
+	// opcion A: la capacidad real de AWS es la fuente de verdad. Si no se puede
+	// leer, no actuamos a ciegas este ciclo.
+	capacity, err := l.Actuator.CurrentCapacity(ctx)
+	if err != nil {
+		log.Println("no se pudo leer la capacidad real, no se actua este ciclo:", err)
+		return DecisionResult{Decision: MaintainCapacity, Reason: "capacity_read_failed", Capacity: l.state.CurrentCapacity}
+	}
+	l.state.CurrentCapacity = capacity
+
+	// piso de seguridad: tiene prioridad sobre todo lo demas. Si estamos por
+	// debajo del minimo, lanzar hasta alcanzarlo y terminar el ciclo aqui; el
+	// siguiente tick vera la capacidad ya corregida.
+	if capacity < l.Config.MinInstances {
+		return l.enforceMinimum(ctx, now, capacity)
 	}
 
 	// auto-sanacion: independiente de la politica de demanda, corre antes que ella.
@@ -103,6 +126,26 @@ func (l *Loop) Tick(ctx context.Context, now time.Time) DecisionResult {
 	return result
 }
 
+// red de seguridad: lanza instancias hasta alcanzar MinInstances. Se ejecuta
+// antes que cualquier otra logica y termina el ciclo (el siguiente tick vera
+// la capacidad corregida). Evita que el sistema quede por debajo del minimo.
+func (l *Loop) enforceMinimum(ctx context.Context, now time.Time, capacity int) DecisionResult {
+	needed := l.Config.MinInstances - capacity
+	log.Printf("piso de seguridad: capacidad %d < minimo %d, lanzando %d", capacity, l.Config.MinInstances, needed)
+
+	result := DecisionResult{Decision: IncreaseCapacity, Reason: "safety_floor", Capacity: capacity}
+	for i := 0; i < needed; i++ {
+		if err := l.Actuator.ScaleUp(ctx); err != nil {
+			log.Println("piso de seguridad: scale up fallo, se reintentara:", err)
+			l.logDecision(DecisionResult{Decision: IncreaseCapacity, Reason: "safety_floor", Capacity: capacity}, capacity, "failed", err)
+			return result
+		}
+		l.state.Apply(result, now) // actualiza LastScaleUp (activa cooldowns)
+	}
+	l.logDecision(result, capacity, "ok", nil)
+	return result
+}
+
 // reemplaza instancias con racha de unhealthy sostenida. Requiere que el observer
 // implemente HealthReporter y el actuator Replacer; si no, no hace nada.
 func (l *Loop) healSick(ctx context.Context, now time.Time) {
@@ -128,6 +171,11 @@ func (l *Loop) healSick(ctx context.Context, now time.Time) {
 			log.Printf("reemplazo de %s fallo, se reintentara: %v", badID, err)
 			continue
 		}
+		// el reemplazo pasa por Apply para actualizar LastScaleDown y LastScaleUp:
+		// asi el cooldown asimetrico existente bloquea un REDUCE de demanda que
+		// caiga justo despues del reemplazo (evita bajar recien tras reemplazar).
+		l.state.Apply(DecisionResult{Decision: ReduceCapacity, Reason: "unhealthy_replacement"}, now)
+		l.state.Apply(DecisionResult{Decision: IncreaseCapacity, Reason: "unhealthy_replacement"}, now)
 		l.logReplacement(now, badID)
 	}
 }
