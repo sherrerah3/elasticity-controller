@@ -3,7 +3,6 @@ package controller
 import "time"
 
 // una medicion completa de aprovisionamiento de una instancia (t0/t1/t2).
-// La produce el actuador (awsx) al esperar running->healthy durante ScaleUp.
 type ProvisioningRecord struct {
 	InstanceID    string    `json:"instance_id"`
 	T0            time.Time `json:"t0"`                // RunInstances solicitado

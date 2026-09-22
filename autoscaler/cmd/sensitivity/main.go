@@ -44,9 +44,7 @@ func runScenario(signals []controller.Signals, confirmCycles int) {
 	cfg := controller.DefaultPolicyConfig()
 	cfg.ScaleDownConfirmCycles = confirmCycles
 
-	// Aislamos el efecto de N: apagamos los cooldowns a proposito, para
-	// que lo unico que varie entre corridas sea el numero de datapoints
-	// de confirmacion, no otro mecanismo interfiriendo.
+	// apagamos los cooldowns para aislar el efecto de N (solo varia la confirmacion).
 	cfg.ScaleDownCooldown = 0
 	cfg.ScaleUpCooldown = 0
 

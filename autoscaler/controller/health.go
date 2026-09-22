@@ -11,9 +11,7 @@ const (
 	TargetUnused    TargetState = "unused"    // desregistrada: ignorar
 )
 
-// cuenta rachas de chequeos unhealthy GENUINOS consecutivos por instancia.
-// initial/draining/unused NO cuentan (evita reemplazar una instancia que apenas
-// arranca o que ya esta en proceso de retiro). Logica pura.
+// cuenta rachas de unhealthy genuinos por instancia (initial/draining/unused no cuentan).
 type HealthTracker struct {
 	threshold int            // N chequeos unhealthy seguidos para disparar reemplazo
 	streak    map[string]int // instanceID -> unhealthy consecutivos
@@ -39,8 +37,7 @@ func (h *HealthTracker) Update(states map[string]TargetState) []string {
 		case TargetHealthy:
 			h.streak[id] = 0
 		default:
-			// initial/draining/unused: no es una falla genuina, no cuenta ni resetea
-			// de forma agresiva; solo aseguramos que no acumule racha.
+			// initial/draining/unused: no es falla genuina, no acumula racha.
 			h.streak[id] = 0
 		}
 	}

@@ -91,9 +91,7 @@ func indexResults(results []cwtypes.MetricDataResult) map[string]cwtypes.MetricD
 	return m
 }
 
-// devuelve el datapoint mas reciente de una serie SOLO si es suficientemente
-// fresco (su timestamp no es mas viejo que maxAge). Evita usar un dato rancio
-// que sigue en la ventana de consulta amplia cuando ya no llegan datos nuevos.
+// devuelve el datapoint mas reciente de una serie solo si no es mas viejo que maxAge.
 func freshestValue(r cwtypes.MetricDataResult, now time.Time, maxAge time.Duration) (float64, bool) {
 	if len(r.Values) == 0 || len(r.Timestamps) == 0 {
 		return 0, false

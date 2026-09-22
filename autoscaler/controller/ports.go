@@ -26,8 +26,7 @@ type Replacer interface {
 	Replace(ctx context.Context, badInstanceID string) error
 }
 
-// avanza el aprovisionamiento de instancias lanzadas (registra en el TG cuando
-// estan running, mide t0/t1/t2). Opcional: lo llama el loop cada tick.
+// avanza el aprovisionamiento de instancias lanzadas. Opcional: lo llama el loop cada tick.
 type ProvisioningAdvancer interface {
 	AdvanceProvisioning(ctx context.Context)
 }

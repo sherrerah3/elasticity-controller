@@ -91,8 +91,7 @@ func TestScaleOutCooldownAlsoBlocksScaleDown(t *testing.T) {
 		t.Fatalf("esperaba scale out, obtuvo %s", result.Decision)
 	}
 
-	// Dentro del cooldown de protección (menos de 3 minutos): aunque haya ciclos cómodos,
-	// no debe permitir scale-down.
+	// dentro del cooldown de subida: aunque haya ciclos comodos, no debe bajar.
 	now = now.Add(2 * time.Minute) // 2 minutos después del scale-up
 	state.RecordSignal(comfortableSignal(now), 10)
 	now = now.Add(1 * time.Minute)

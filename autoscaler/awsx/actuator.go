@@ -46,9 +46,7 @@ type ActuatorConfig struct {
 	AppPort            int32
 }
 
-// ejecuta las decisiones sobre EC2 + ALB. Implementa controller.Actuator.
-// Todas las operaciones son NO bloqueantes: disparan la llamada a AWS y
-// retornan de inmediato. El loop, tick a tick, observa el progreso real.
+// ejecuta las decisiones sobre EC2 + ALB (no bloqueante). Implementa controller.Actuator.
 type Actuator struct {
 	EC2      ec2API
 	ELB      elbTargetsAPI
@@ -110,10 +108,8 @@ func (a *Actuator) Launch(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-// AdvanceProvisioning avanza el aprovisionamiento de las instancias lanzadas,
-// sin bloquear: por cada una pendiente, si ya esta running la registra (t1),
-// y si el ALB la reporta healthy emite la medicion t0/t1/t2 (t2). Lo llama el
-// loop una vez por tick.
+// avanza el aprovisionamiento de las pendientes: registra al estar running (t1)
+// y emite la medicion al quedar healthy (t2). No bloqueante; lo llama el loop por tick.
 func (a *Actuator) AdvanceProvisioning(ctx context.Context) {
 	a.mu.Lock()
 	ids := make([]string, 0, len(a.pending))
@@ -329,8 +325,7 @@ func optString(s string) *string {
 	return aws.String(s)
 }
 
-// true si el error es un "aun no existe" transitorio por consistencia eventual
-// de AWS (el ID recien creado todavia no se propaga). No es un fallo real.
+// true si el error es un NotFound transitorio por consistencia eventual de AWS.
 func isTransientNotFound(err error) bool {
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {

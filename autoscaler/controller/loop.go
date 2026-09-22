@@ -65,14 +65,12 @@ func (l *Loop) Tick(ctx context.Context, now time.Time) DecisionResult {
 	}
 	defer l.ticking.Store(false)
 
-	// avanza el aprovisionamiento de instancias lanzadas en ticks previos
-	// (las registra al estar running y mide t0/t1/t2). No bloqueante.
+	// avanza el aprovisionamiento de instancias lanzadas en ticks previos.
 	if adv, ok := l.Actuator.(ProvisioningAdvancer); ok {
 		adv.AdvanceProvisioning(ctx)
 	}
 
-	// opcion A: la capacidad real de AWS es la fuente de verdad. Si no se puede
-	// leer, no actuamos a ciegas este ciclo.
+	// la capacidad real de AWS es la fuente de verdad; si no se puede leer, no actuamos.
 	capacity, err := l.Actuator.CurrentCapacity(ctx)
 	if err != nil {
 		log.Println("no se pudo leer la capacidad real, no se actua este ciclo:", err)
@@ -80,9 +78,7 @@ func (l *Loop) Tick(ctx context.Context, now time.Time) DecisionResult {
 	}
 	l.state.CurrentCapacity = capacity
 
-	// piso de seguridad: tiene prioridad sobre todo lo demas. Si estamos por
-	// debajo del minimo, lanzar hasta alcanzarlo y terminar el ciclo aqui; el
-	// siguiente tick vera la capacidad ya corregida.
+	// piso de seguridad: si estamos bajo el minimo, relanzar y terminar el ciclo aqui.
 	if capacity < l.Config.MinInstances {
 		return l.enforceMinimum(ctx, now, capacity)
 	}
@@ -126,9 +122,7 @@ func (l *Loop) Tick(ctx context.Context, now time.Time) DecisionResult {
 	return result
 }
 
-// red de seguridad: lanza instancias hasta alcanzar MinInstances. Se ejecuta
-// antes que cualquier otra logica y termina el ciclo (el siguiente tick vera
-// la capacidad corregida). Evita que el sistema quede por debajo del minimo.
+// lanza instancias hasta alcanzar MinInstances. Evita que el sistema quede bajo el minimo.
 func (l *Loop) enforceMinimum(ctx context.Context, now time.Time, capacity int) DecisionResult {
 	needed := l.Config.MinInstances - capacity
 	log.Printf("piso de seguridad: capacidad %d < minimo %d, lanzando %d", capacity, l.Config.MinInstances, needed)
@@ -165,15 +159,12 @@ func (l *Loop) healSick(ctx context.Context, now time.Time) {
 	}
 
 	for _, badID := range l.health.Update(health) {
-		// orden lanzar->terminar: nunca baja de capacidad (tradeoff: puede rozar
-		// el maximo por un instante, preferible a quedarse corto ante trafico).
+		// orden lanzar->terminar: nunca baja de capacidad (puede rozar el maximo un instante).
 		if err := replacer.Replace(ctx, badID); err != nil {
 			log.Printf("reemplazo de %s fallo, se reintentara: %v", badID, err)
 			continue
 		}
-		// el reemplazo pasa por Apply para actualizar LastScaleDown y LastScaleUp:
-		// asi el cooldown asimetrico existente bloquea un REDUCE de demanda que
-		// caiga justo despues del reemplazo (evita bajar recien tras reemplazar).
+		// el reemplazo pasa por Apply para que el cooldown asimetrico bloquee un REDUCE inmediato.
 		l.state.Apply(DecisionResult{Decision: ReduceCapacity, Reason: "unhealthy_replacement"}, now)
 		l.state.Apply(DecisionResult{Decision: IncreaseCapacity, Reason: "unhealthy_replacement"}, now)
 		l.logReplacement(now, badID)

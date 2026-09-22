@@ -101,8 +101,7 @@ func Decide(state ControllerState, cfg PolicyConfig, now time.Time) DecisionResu
 		latestSignal = state.History[len(state.History)-1]
 	}
 
-	// guard de datos insuficientes (diseño 5.5): ante metricas faltantes o
-	// invalidas no se actua, para no asumir el mejor ni el peor caso.
+	// guard de datos insuficientes: ante metricas faltantes o invalidas no se actua.
 	if len(state.History) == 0 || !latestSignal.Valid {
 		return DecisionResult{
 			Decision:      MaintainCapacity,

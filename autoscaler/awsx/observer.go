@@ -54,8 +54,7 @@ func (o *Observer) Observe(ctx context.Context) (controller.Signals, error) {
 		return sig, nil
 	}
 
-	// ventana amplia hacia atras: CloudWatch publica los datapoints del ALB con
-	// 1-3 min de retraso, asi que se piden varios minutos y se toma el mas reciente.
+	// ventana amplia: CloudWatch retrasa los datapoints del ALB 1-3 min.
 	lookback := o.Lookback
 	if lookback <= 0 {
 		lookback = 5 * time.Minute
@@ -74,8 +73,7 @@ func (o *Observer) Observe(ctx context.Context) (controller.Signals, error) {
 
 	results := indexResults(out.MetricDataResults)
 
-	// umbral de frescura: un datapoint mas viejo que esto se ignora (evita usar
-	// un dato rancio que sigue en la ventana amplia cuando ya no llega tráfico).
+	// umbral de frescura: descarta datapoints mas viejos que esto (evita datos rancios).
 	maxAge := o.MaxDataAge
 	if maxAge <= 0 {
 		maxAge = 2 * time.Minute
@@ -85,8 +83,7 @@ func (o *Observer) Observe(ctx context.Context) (controller.Signals, error) {
 	p95, okP95 := freshestValue(results["p95"], now, maxAge)
 	sig.P95LatencyMillis = p95 * 1000.0
 
-	// requests por target: el datapoint es la suma de UN periodo (60s) -> req/s.
-	// Se divide por el periodo, no por la ventana de consulta.
+	// requests por target: el datapoint es la suma de un periodo (60s) -> req/s.
 	reqCount, okReq := freshestValue(results["req"], now, maxAge)
 	sig.RequestsPerTarget = reqCount / periodSecs
 
