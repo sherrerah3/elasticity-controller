@@ -4,6 +4,7 @@ import { check } from 'k6';
 const RATE = Number(__ENV.RATE || 5);
 const BASE_URL = __ENV.BASE_URL || 'http://REEMPLAZAR-CON-alb_dns_name';
 const ITERATIONS = Number(__ENV.ITERATIONS || 100000);
+const DURATION = __ENV.DURATION || '3m';
 
 export const options = {
   scenarios: {
@@ -11,7 +12,7 @@ export const options = {
       executor: 'constant-arrival-rate',
       rate: RATE,
       timeUnit: '1s',
-      duration: '3m',
+      duration: DURATION,
       preAllocatedVUs: 50,
       maxVUs: 1000,
     },
