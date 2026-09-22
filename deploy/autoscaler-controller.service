@@ -1,0 +1,38 @@
+# Servicio systemd del controlador de auto-escalado.
+# Se coloca en la instancia CONTROLLER (subred privada) en:
+#   /etc/systemd/system/autoscaler-controller.service
+#
+# Los valores entre <...> se reemplazan con los outputs de `terraform output`
+# antes de instalar (ver guia de despliegue). El binario se copia a /home/ubuntu/.
+#
+# Logs: se escriben en /home/ubuntu/ (decisions.jsonl y provisioning.jsonl),
+# faciles de bajar por scp al terminar la sesion.
+
+[Unit]
+Description=Auto-scaling controller (Go)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu
+ExecStart=/home/ubuntu/autoscaler-controller \
+  -region=us-east-1 \
+  -interval=60s \
+  -ami=<AMI_APP> \
+  -target-group-arn=<TARGET_GROUP_ARN> \
+  -tg-dimension=<TG_DIMENSION> \
+  -lb-dimension=<LB_DIMENSION> \
+  -subnet-id=<PRIVATE_SUBNET_ID> \
+  -app-sg-id=<APP_SG_ID> \
+  -iam-profile=LabInstanceProfile \
+  -key-name=vockey \
+  -app-port=8080 \
+  -log=/home/ubuntu/decisions.jsonl \
+  -prov-log=/home/ubuntu/provisioning.jsonl
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
