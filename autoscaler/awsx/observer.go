@@ -29,8 +29,11 @@ type Observer struct {
 	TargetGroupARN string
 	TGDimension    string        // valor de la dimension TargetGroup (targetgroup/.../id)
 	LBDimension    string        // valor de la dimension LoadBalancer (app/.../id)
-	Window         time.Duration // ventana de agregacion (= intervalo del loop, p.ej. 60s)
+	Lookback       time.Duration // cuanto se mira hacia atras (amplio, p.ej. 5 min) para no perder datapoints
 }
+
+// segundos del periodo de agregacion de CloudWatch (cada datapoint cubre 60s).
+const periodSecs = 60.0
 
 // implementa controller.MetricsObserver.
 func (o *Observer) Observe(ctx context.Context) (controller.Signals, error) {
@@ -50,7 +53,13 @@ func (o *Observer) Observe(ctx context.Context) (controller.Signals, error) {
 		return sig, nil
 	}
 
-	start := now.Add(-o.Window)
+	// ventana amplia hacia atras: CloudWatch publica los datapoints del ALB con
+	// 1-3 min de retraso, asi que se piden varios minutos y se toma el mas reciente.
+	lookback := o.Lookback
+	if lookback <= 0 {
+		lookback = 5 * time.Minute
+	}
+	start := now.Add(-lookback)
 	queries := o.buildQueries(healthyIDs)
 
 	out, err := o.CW.GetMetricData(ctx, &cloudwatch.GetMetricDataInput{
@@ -68,11 +77,10 @@ func (o *Observer) Observe(ctx context.Context) (controller.Signals, error) {
 	p95, okP95 := latestValue(results["p95"])
 	sig.P95LatencyMillis = p95 * 1000.0
 
-	// requests por target: conteo en la ventana -> req/s.
+	// requests por target: el datapoint es la suma de UN periodo (60s) -> req/s.
+	// Se divide por el periodo, no por la ventana de consulta.
 	reqCount, okReq := latestValue(results["req"])
-	if o.Window > 0 {
-		sig.RequestsPerTarget = reqCount / o.Window.Seconds()
-	}
+	sig.RequestsPerTarget = reqCount / periodSecs
 
 	// CPU promedio SOLO sobre instancias sanas.
 	cpu, okCPU := averageCPU(results, healthyIDs)

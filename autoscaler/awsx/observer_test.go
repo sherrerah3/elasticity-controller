@@ -60,7 +60,7 @@ func TestObserveConvertsUnits(t *testing.T) {
 		},
 	}}
 
-	obs := &Observer{CW: cw, ELB: elb, Window: 60 * time.Second}
+	obs := &Observer{CW: cw, ELB: elb, Lookback: 5 * time.Minute}
 	sig, err := obs.Observe(context.Background())
 	if err != nil {
 		t.Fatalf("Observe fallo: %v", err)
@@ -89,7 +89,7 @@ func TestObserveNoHealthyIsInvalid(t *testing.T) {
 			targetHealth("i-1", elbtypes.TargetHealthStateEnumUnhealthy),
 		},
 	}}
-	obs := &Observer{CW: &mockCW{}, ELB: elb, Window: 60 * time.Second}
+	obs := &Observer{CW: &mockCW{}, ELB: elb, Lookback: 5 * time.Minute}
 
 	sig, err := obs.Observe(context.Background())
 	if err != nil {
@@ -118,7 +118,7 @@ func TestObserveAveragesCPUOnlyHealthy(t *testing.T) {
 			metricResult("cpu_0", 30), // solo i-1 (unica sana)
 		},
 	}}
-	obs := &Observer{CW: cw, ELB: elb, Window: 60 * time.Second}
+	obs := &Observer{CW: cw, ELB: elb, Lookback: 5 * time.Minute}
 
 	sig, err := obs.Observe(context.Background())
 	if err != nil {

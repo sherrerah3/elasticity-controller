@@ -18,7 +18,7 @@ func main() {
 	tgARN := flag.String("target-group-arn", "", "ARN del target group")
 	tgDim := flag.String("tg-dimension", "", "dimension TargetGroup de CloudWatch (targetgroup/.../id)")
 	lbDim := flag.String("lb-dimension", "", "dimension LoadBalancer de CloudWatch (app/.../id)")
-	window := flag.Duration("window", 60*time.Second, "ventana de agregacion de metricas")
+	lookback := flag.Duration("lookback", 5*time.Minute, "cuanto mirar hacia atras (amplio, por el retraso de CloudWatch)")
 	flag.Parse()
 
 	if *tgARN == "" {
@@ -37,7 +37,7 @@ func main() {
 		TargetGroupARN: *tgARN,
 		TGDimension:    *tgDim,
 		LBDimension:    *lbDim,
-		Window:         *window,
+		Lookback:       *lookback,
 	}
 
 	fmt.Println("Observando una vez (solo lectura, sin actuar)...")
