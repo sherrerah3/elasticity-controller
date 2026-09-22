@@ -6,8 +6,7 @@ end-to-end.
 ## Contenido
 
 - **`DESPLIEGUE.md`** — guía paso a paso completa: desde levantar la
-  infraestructura hasta las pruebas de escalado y auto-sanación, y la recolección
-  de evidencia. **Empieza aquí.**
+  infraestructura hasta las pruebas de escalado y auto-sanación, y la recolección de evidencia. 
 - **`autoscaler-controller.service`** — unidad systemd que corre el binario del
   controlador en la instancia EC2 del controller. Los valores `<...>` se
   reemplazan con los outputs de Terraform durante el despliegue.

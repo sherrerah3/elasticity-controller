@@ -211,7 +211,7 @@ reason "unhealthy_replacement" (un REDUCE y un INCREASE).
 
 ## 7. Recoger la evidencia (antes de destruir)
 
-Los logs viven en el filesystem del controller. Bájalos a tu PC antes de apagar:
+Los logs viven en el filesystem del controller. Para bajarlos a tu PC antes de apagar:
 
 ```bash
 scp controller:/home/ubuntu/decisions.jsonl ./decisions.jsonl
