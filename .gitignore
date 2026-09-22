@@ -1,7 +1,13 @@
 .venv
 *.venv
 *__pycache__
-results/
+
+# datos crudos de la caracterizacion k6 (pesados, no se versionan)...
+results/*
+# ...pero SI se versiona la evidencia clave: los logs de decisiones y su README
+!results/decisions.jsonl
+!results/provisioning.jsonl
+!results/README.md
 
 # documentacion de estudio del codigo (no se versiona)
 docs/
