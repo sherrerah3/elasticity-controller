@@ -32,3 +32,8 @@ output "controller_private_ip" {
   description = "IP privada del controller (para SSH/scp saltando por el bastion con ProxyJump)"
   value       = aws_instance.controller.private_ip
 }
+
+output "app_seed_instance_id" {
+  description = "ID de la instancia semilla de la app (arranque en frio del pool gestionado)"
+  value       = aws_instance.app_seed.id
+}

@@ -40,3 +40,27 @@ variable "controller_instance_type" {
   type        = string
   default     = "t3.micro"
 }
+
+variable "app_ami" {
+  description = "AMI pre-construida de la app (Ubuntu + Flask/gunicorn). La misma que usa el controller."
+  type        = string
+  default     = "ami-09a801a9696d3cc3d"
+}
+
+variable "app_instance_type" {
+  description = "Tipo de instancia de la app"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "managed_tag_key" {
+  description = "Clave del tag con que el controller identifica sus instancias gestionadas"
+  type        = string
+  default     = "autoscaler-managed"
+}
+
+variable "managed_tag_value" {
+  description = "Valor del tag de instancias gestionadas"
+  type        = string
+  default     = "true"
+}
