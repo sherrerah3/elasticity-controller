@@ -2,8 +2,8 @@ import http from 'k6/http';
 import { check } from 'k6';
 
 const RATE = Number(__ENV.RATE || 5);
-const BASE_URL = __ENV.BASE_URL || 'http://3.89.55.234:8080';
-const ITERATIONS = Number(__ENV.ITERATIONS || 500000);
+const BASE_URL = __ENV.BASE_URL || 'http://REEMPLAZAR-CON-alb_dns_name';
+const ITERATIONS = Number(__ENV.ITERATIONS || 100000);
 
 export const options = {
   scenarios: {
